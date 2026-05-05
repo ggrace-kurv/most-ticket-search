@@ -5,59 +5,334 @@
     <title>MOST2 Ticket Search</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='main.css') }}">
     <style>
-        body { font-family: var(--font-primary, system-ui, sans-serif); background: var(--color-background, #fffaf3); margin: 0; padding: 24px; }
-        .container { max-width: 1400px; margin: 0 auto; }
-        h1 { color: var(--color-primary, #005300); margin-bottom: 16px; }
-        .filters { background: white; border-radius: 8px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-bottom: 20px; }
-        .filter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 12px; }
-        .filter-grid label { display: flex; flex-direction: column; font-size: 12px; color: #555; gap: 4px; }
-        .filter-grid input, .filter-grid select { padding: 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; }
-        .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-        .btn { padding: 8px 16px; border-radius: 4px; border: none; cursor: pointer; font-size: 14px; text-decoration: none; display: inline-block; }
-        .btn-primary { background: var(--color-primary, #005300); color: white; }
-        .btn-secondary { background: #eee; color: #333; }
-        .btn-export { background: var(--color-orange, #ef9000); color: white; }
-        .btn[disabled], .btn.disabled { opacity: 0.5; pointer-events: none; }
-        .summary { display: flex; gap: 24px; padding: 12px 20px; background: #f0f6f0; border-radius: 8px; margin-bottom: 16px; align-items: center; }
-        .summary .num { font-size: 20px; font-weight: 600; color: var(--color-primary, #005300); }
-        .summary .lbl { font-size: 12px; color: #666; }
-        .error { background: #fee; border-left: 4px solid #c00; padding: 12px 16px; margin-bottom: 16px; border-radius: 4px; }
-        table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
-        th { background: var(--color-primary, #005300); color: white; padding: 10px 8px; text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
-        td { padding: 8px; border-top: 1px solid #eee; font-size: 13px; }
-        tr:hover td { background: #fafafa; }
-        .pagination { display: flex; gap: 4px; padding: 16px 0; align-items: center; flex-wrap: wrap; }
-        .pagination a, .pagination span { padding: 6px 12px; border: 1px solid #ddd; border-radius: 4px; text-decoration: none; color: #333; font-size: 13px; }
-        .pagination .current { background: var(--color-primary, #005300); color: white; border-color: var(--color-primary, #005300); }
-        .pagination .disabled { opacity: 0.4; pointer-events: none; }
-        .empty { text-align: center; padding: 48px 16px; color: #666; }
-        .warning { background: #fff8dc; border-left: 4px solid #d4a017; padding: 12px 16px; margin-bottom: 16px; border-radius: 4px; font-size: 13px; }
+        :root {
+            --c-primary: #005300;
+            --c-primary-hover: #006b00;
+            --c-primary-soft: #e8f1e8;
+            --c-orange: #ef9000;
+            --c-orange-hover: #d68000;
+            --c-bg: #f7f6f1;
+            --c-surface: #ffffff;
+            --c-border: #e2e2dd;
+            --c-border-strong: #cdcdc6;
+            --c-text: #1f2421;
+            --c-text-muted: #6b6f6c;
+            --c-text-faint: #93968f;
+            --c-success: #1f8a3a;
+            --c-success-bg: #e6f4ea;
+            --c-warning: #b97800;
+            --c-warning-bg: #fff4dc;
+            --c-danger: #b3261e;
+            --c-danger-bg: #fdecea;
+            --c-info: #5b6675;
+            --c-info-bg: #eef0f2;
+            --shadow-sm: 0 1px 2px rgba(15, 30, 20, 0.04), 0 1px 3px rgba(15, 30, 20, 0.06);
+            --shadow-md: 0 4px 12px rgba(15, 30, 20, 0.08);
+            --shadow-lg: 0 16px 40px rgba(15, 30, 20, 0.18);
+            --radius-sm: 6px;
+            --radius-md: 10px;
+            --radius-lg: 14px;
+            --font-stack: var(--font-primary, "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif);
+        }
+        * { box-sizing: border-box; }
+        html { color-scheme: light; }
+        body {
+            font-family: var(--font-stack);
+            background: var(--c-bg);
+            color: var(--c-text);
+            margin: 0; padding: 24px 24px 64px;
+            font-size: 14px;
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+        }
+        .container { max-width: 1440px; margin: 0 auto; }
+
+        /* Header */
+        .page-head {
+            display: flex; align-items: baseline; justify-content: space-between;
+            margin-bottom: 20px; gap: 16px; flex-wrap: wrap;
+        }
+        .page-head h1 {
+            color: var(--c-primary); font-size: 24px; font-weight: 700;
+            letter-spacing: -0.01em; margin: 0;
+        }
+        .page-head .subtitle { color: var(--c-text-muted); font-size: 13px; }
+
+        /* Filter card */
+        .filters {
+            background: var(--c-surface);
+            border: 1px solid var(--c-border);
+            border-radius: var(--radius-md);
+            padding: 20px 22px;
+            box-shadow: var(--shadow-sm);
+            margin-bottom: 20px;
+        }
+        .filter-grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 14px 16px; margin-bottom: 16px;
+        }
+        .filter-grid label {
+            display: flex; flex-direction: column;
+            font-size: 11px; font-weight: 600; text-transform: uppercase;
+            letter-spacing: 0.04em; color: var(--c-text-muted); gap: 6px;
+        }
+        .filter-grid input, .filter-grid select {
+            padding: 8px 10px;
+            border: 1px solid var(--c-border-strong);
+            border-radius: var(--radius-sm);
+            font-size: 14px; font-family: inherit; color: var(--c-text);
+            background: white;
+            transition: border-color .15s, box-shadow .15s;
+        }
+        .filter-grid input:focus, .filter-grid select:focus {
+            outline: none;
+            border-color: var(--c-primary);
+            box-shadow: 0 0 0 3px rgba(0, 83, 0, 0.15);
+        }
+        .actions {
+            display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+            padding-top: 4px; border-top: 1px solid var(--c-border);
+            margin-top: 4px; padding-top: 14px;
+        }
+        .actions .spacer { flex: 1; }
+        .actions .perpage { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--c-text-muted); }
+        .actions .perpage select {
+            padding: 6px 8px; border: 1px solid var(--c-border-strong); border-radius: var(--radius-sm);
+            font-size: 13px; font-family: inherit; background: white;
+        }
+
+        /* Buttons */
+        .btn {
+            padding: 9px 16px; border-radius: var(--radius-sm);
+            border: 1px solid transparent; cursor: pointer;
+            font-size: 14px; font-weight: 500; font-family: inherit;
+            text-decoration: none; display: inline-flex; align-items: center; gap: 6px;
+            transition: background .15s, transform .05s, box-shadow .15s;
+        }
+        .btn:focus-visible { outline: 2px solid var(--c-primary); outline-offset: 2px; }
+        .btn:active { transform: translateY(1px); }
+        .btn-primary { background: var(--c-primary); color: white; box-shadow: var(--shadow-sm); }
+        .btn-primary:hover { background: var(--c-primary-hover); }
+        .btn-secondary { background: white; color: var(--c-text); border-color: var(--c-border-strong); }
+        .btn-secondary:hover { background: #f8f8f4; }
+        .btn-export { background: var(--c-orange); color: white; box-shadow: var(--shadow-sm); }
+        .btn-export:hover { background: var(--c-orange-hover); }
+        .btn[disabled], .btn.disabled { opacity: 0.45; pointer-events: none; box-shadow: none; }
+
+        /* Multi-select blocks */
         .multiselect-block { grid-column: span 2; }
         .multiselect-block .checks, .multiselect-block select[multiple] {
-            display: block; max-height: 110px; overflow-y: auto;
-            background: white; border: 1px solid #ccc; border-radius: 4px; padding: 6px 8px;
+            display: block; max-height: 120px; overflow-y: auto;
+            background: white; border: 1px solid var(--c-border-strong);
+            border-radius: var(--radius-sm); padding: 8px 10px;
+            font-family: inherit; font-size: 13px;
         }
-        .multiselect-block .checks label { flex-direction: row; align-items: center; gap: 6px; font-size: 13px; padding: 2px 0; }
-        .multiselect-block .checks input { margin: 0; }
-        .multiselect-actions { font-size: 11px; margin-top: 4px; }
-        .multiselect-actions a { color: var(--color-primary, #005300); margin-right: 8px; cursor: pointer; }
-        tr.ticket-row { cursor: pointer; }
-        tr.ticket-row.expanded td { background: #f0f6f0; font-weight: 500; }
-        tr.comments-row td { padding: 0; background: #fafafa; }
-        .comments-pane { padding: 16px 20px; border-top: 2px solid var(--color-primary, #005300); }
-        .comment-item { padding: 12px 0; border-bottom: 1px dashed #ddd; }
+        .multiselect-block select[multiple]:focus {
+            outline: none; border-color: var(--c-primary);
+            box-shadow: 0 0 0 3px rgba(0, 83, 0, 0.15);
+        }
+        .multiselect-block .checks label {
+            display: flex; flex-direction: row; align-items: center; gap: 8px;
+            font-size: 13px; font-weight: 400; text-transform: none; letter-spacing: 0;
+            padding: 3px 0; color: var(--c-text); cursor: pointer;
+        }
+        .multiselect-block .checks input { margin: 0; accent-color: var(--c-primary); }
+        .multiselect-actions {
+            font-size: 11px; margin-top: 6px;
+            display: flex; gap: 14px;
+        }
+        .multiselect-actions a {
+            color: var(--c-primary); cursor: pointer; font-weight: 500;
+            text-transform: uppercase; letter-spacing: 0.04em;
+        }
+        .multiselect-actions a:hover { text-decoration: underline; }
+
+        /* Banners */
+        .banner {
+            display: flex; gap: 10px; align-items: flex-start;
+            padding: 12px 16px; margin-bottom: 16px;
+            border-radius: var(--radius-sm); font-size: 13px; line-height: 1.5;
+        }
+        .banner-error { background: var(--c-danger-bg); color: var(--c-danger); border-left: 4px solid var(--c-danger); }
+        .banner-warning { background: var(--c-warning-bg); color: var(--c-warning); border-left: 4px solid var(--c-warning); }
+
+        /* Result summary strip */
+        .summary {
+            display: flex; gap: 28px; padding: 14px 20px;
+            background: var(--c-surface); border: 1px solid var(--c-border);
+            border-radius: var(--radius-md); margin-bottom: 14px;
+            align-items: center; box-shadow: var(--shadow-sm);
+        }
+        .summary .stat { display: flex; flex-direction: column; gap: 2px; }
+        .summary .num {
+            font-size: 22px; font-weight: 700; color: var(--c-primary);
+            font-variant-numeric: tabular-nums;
+        }
+        .summary .lbl { font-size: 11px; color: var(--c-text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+
+        /* Table */
+        table {
+            width: 100%; border-collapse: separate; border-spacing: 0;
+            background: var(--c-surface); border: 1px solid var(--c-border);
+            border-radius: var(--radius-md); overflow: hidden;
+            box-shadow: var(--shadow-sm);
+            table-layout: fixed;
+        }
+        thead { position: sticky; top: 0; z-index: 5; }
+        th {
+            background: var(--c-primary); color: white;
+            padding: 11px 10px; text-align: left;
+            font-size: 11px; font-weight: 600;
+            text-transform: uppercase; letter-spacing: 0.06em;
+            border-right: 1px solid rgba(255,255,255,0.08);
+        }
+        th:last-child { border-right: none; }
+        td {
+            padding: 9px 10px; border-top: 1px solid var(--c-border);
+            font-size: 13px; vertical-align: top;
+            word-break: break-word; overflow-wrap: anywhere;
+        }
+        tbody tr:nth-child(4n+1) td { background: #fbfbf9; }
+        tr.ticket-row { cursor: pointer; transition: background .12s; }
+        tr.ticket-row:hover td { background: var(--c-primary-soft) !important; }
+        tr.ticket-row.expanded td { background: var(--c-primary-soft) !important; font-weight: 500; }
+        tr.comments-row td { padding: 0; background: #fafaf6; }
+
+        /* Status pills */
+        .pill {
+            display: inline-block; padding: 2px 10px; border-radius: 999px;
+            font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+            text-transform: uppercase;
+            background: var(--c-info-bg); color: var(--c-info);
+        }
+        .pill-open { background: var(--c-success-bg); color: var(--c-success); }
+        .pill-hold { background: var(--c-warning-bg); color: var(--c-warning); }
+        .pill-closed { background: var(--c-info-bg); color: var(--c-info); }
+
+        /* Per-row Summarize */
+        .actions-cell { width: 110px; padding: 6px 8px !important; vertical-align: middle; }
+        .row-action {
+            font-size: 11px; padding: 5px 10px; border-radius: var(--radius-sm);
+            border: 1px solid var(--c-primary);
+            background: white; color: var(--c-primary);
+            cursor: pointer; white-space: nowrap; font-weight: 500;
+            font-family: inherit;
+            transition: background .12s, color .12s;
+        }
+        .row-action:hover { background: var(--c-primary); color: white; }
+        .row-action:focus-visible { outline: 2px solid var(--c-primary); outline-offset: 2px; }
+
+        /* Comments expand */
+        .comments-pane {
+            padding: 16px 22px; border-top: 2px solid var(--c-primary);
+            max-width: 100%;
+        }
+        .comment-item { padding: 12px 0; border-bottom: 1px dashed var(--c-border); }
         .comment-item:last-child { border-bottom: none; }
-        .comment-meta { font-size: 11px; color: #666; margin-bottom: 6px; }
-        .comment-meta strong { color: #333; }
-        .comment-body { font-size: 13px; line-height: 1.5; }
+        .comment-meta { font-size: 11px; color: var(--c-text-muted); margin-bottom: 6px; }
+        .comment-meta strong { color: var(--c-text); }
+        .comment-body {
+            font-size: 13px; line-height: 1.55; color: var(--c-text);
+            word-break: break-word; overflow-wrap: anywhere;
+        }
         .comment-body p { margin: 0 0 6px 0; }
-        .comments-loading { color: #888; font-style: italic; padding: 12px; }
-        .comments-error { color: #c00; padding: 12px; }
+        .comment-body img, .comment-body table { max-width: 100%; height: auto; }
+        .comment-body pre { max-width: 100%; overflow-x: auto; white-space: pre-wrap; }
+        .comments-loading {
+            color: var(--c-text-muted); font-style: italic; padding: 12px;
+            display: inline-flex; align-items: center; gap: 8px;
+        }
+        .comments-error {
+            color: var(--c-danger); padding: 12px;
+            display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+        }
+        .retry-link {
+            color: var(--c-primary); font-weight: 500; cursor: pointer;
+            text-decoration: underline;
+        }
+
+        /* Spinner */
+        .spinner {
+            width: 14px; height: 14px;
+            border: 2px solid var(--c-border-strong); border-top-color: var(--c-primary);
+            border-radius: 50%; animation: spin 0.8s linear infinite;
+            display: inline-block;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* Pagination */
+        .pagination { display: flex; gap: 6px; padding: 16px 0 0; align-items: center; flex-wrap: wrap; }
+        .pagination a, .pagination span {
+            padding: 6px 12px; border: 1px solid var(--c-border-strong);
+            border-radius: var(--radius-sm); text-decoration: none;
+            color: var(--c-text); font-size: 13px; background: white;
+            transition: border-color .12s, background .12s;
+        }
+        .pagination a:hover { border-color: var(--c-primary); }
+        .pagination .current { background: var(--c-primary); color: white; border-color: var(--c-primary); }
+        .pagination .disabled { opacity: 0.4; pointer-events: none; }
+
+        .empty {
+            text-align: center; padding: 64px 16px;
+            color: var(--c-text-muted); background: var(--c-surface);
+            border: 1px dashed var(--c-border-strong); border-radius: var(--radius-md);
+        }
+
+        /* Modal */
+        @keyframes modal-fade {
+            from { opacity: 0; transform: translateY(8px) scale(0.98); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        .modal-backdrop {
+            position: fixed; inset: 0;
+            background: rgba(15, 30, 20, 0.5);
+            display: flex; align-items: center; justify-content: center; z-index: 1000;
+            backdrop-filter: blur(2px);
+        }
+        .modal-card {
+            background: var(--c-surface); border-radius: var(--radius-lg);
+            max-width: 720px; width: 92%; max-height: 80vh;
+            display: flex; flex-direction: column;
+            box-shadow: var(--shadow-lg);
+            animation: modal-fade .14s ease-out;
+        }
+        .modal-head {
+            padding: 16px 22px; border-bottom: 1px solid var(--c-border);
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .modal-head h3 {
+            margin: 0; font-size: 16px; font-weight: 600; color: var(--c-primary);
+        }
+        .modal-close {
+            background: none; border: none; font-size: 22px; cursor: pointer;
+            color: var(--c-text-faint); line-height: 1; padding: 4px 8px;
+            border-radius: var(--radius-sm); transition: background .12s, color .12s;
+        }
+        .modal-close:hover { background: var(--c-info-bg); color: var(--c-text); }
+        .modal-close:focus-visible { outline: 2px solid var(--c-primary); outline-offset: 2px; }
+        .modal-body {
+            padding: 20px 22px; overflow-y: auto;
+            line-height: 1.6; font-size: 14px;
+            white-space: pre-wrap; word-break: break-word;
+            max-width: 68ch; margin: 0 auto;
+        }
+        .modal-meta {
+            font-size: 11px; color: var(--c-text-faint);
+            padding: 8px 22px 14px; border-top: 1px solid var(--c-border);
+            text-transform: uppercase; letter-spacing: 0.04em;
+        }
     </style>
 </head>
 <body>
 <div class="container">
-    <h1>MOST2 Ticket Search</h1>
+    <div class="page-head">
+        <h1>MOST2 Ticket Search</h1>
+        {% if submitted %}
+            <span class="subtitle">Live search · {{ total }} matching ticket{{ '' if total == 1 else 's' }}</span>
+        {% else %}
+            <span class="subtitle">Filter and click <strong>Search</strong> to query MOST2</span>
+        {% endif %}
+    </div>
 
     <form method="get" class="filters">
         <input type="hidden" name="submitted" value="1">
@@ -92,7 +367,7 @@
             <label>Date To
                 <input type="date" name="date_to" value="{{ filters.get('date_to', '') }}">
             </label>
-            <label class="multiselect-block">Ownership Groups (multi-select; Ctrl/Cmd-click)
+            <label class="multiselect-block">Ownership Groups
                 <select name="ownership_groups" multiple size="5">
                     {% for g in all_groups %}
                         <option value="{{ g }}" {% if g in selected_groups %}selected{% endif %}>{{ g }}</option>
@@ -127,38 +402,60 @@
             {% else %}
                 <span class="btn btn-export disabled">Download CSV</span>
             {% endif %}
+            <div class="spacer"></div>
+            <label class="perpage">
+                Per page
+                <select name="per_page" onchange="this.form.submit()">
+                    {% for n in [25, 50, 100, 200, 500] %}
+                        <option value="{{ n }}" {% if per_page == n %}selected{% endif %}>{{ n }}</option>
+                    {% endfor %}
+                </select>
+            </label>
         </div>
     </form>
 
     {% if error %}
-        <div class="error">{{ error }}</div>
+        <div class="banner banner-error">{{ error }}</div>
     {% endif %}
     {% if warning %}
-        <div class="warning">{{ warning }}</div>
+        <div class="banner banner-warning">{{ warning }}</div>
     {% endif %}
 
     {% if submitted and not error %}
         <div class="summary">
-            <div><div class="num">{{ total }}</div><div class="lbl">Tickets</div></div>
-            <div><div class="num">{{ page }}/{{ total_pages }}</div><div class="lbl">Page</div></div>
-            <div><div class="num">{{ per_page }}</div><div class="lbl">Per page</div></div>
+            <div class="stat"><span class="num">{{ total }}</span><span class="lbl">Matching</span></div>
+            <div class="stat"><span class="num">{{ page }} / {{ total_pages }}</span><span class="lbl">Page</span></div>
+            <div class="stat"><span class="num">{{ per_page }}</span><span class="lbl">Per page</span></div>
         </div>
 
         {% if tickets %}
             <table>
                 <thead>
                     <tr>
-                        {% for col in columns %}<th>{{ col.replace('_', ' ').title() }}</th>{% endfor %}
+                        <th style="width: 110px">Actions</th>
+                        {% for col in columns %}
+                            <th>{{ column_labels.get(col, col.replace('_', ' ').title()) }}</th>
+                        {% endfor %}
                     </tr>
                 </thead>
                 <tbody>
                     {% for t in tickets %}
                     {% set tnum = lookup(t, 'ticket_id') %}
                     <tr class="ticket-row" data-ticket="{{ tnum }}" onclick="toggleComments(this)">
-                        {% for col in columns %}<td>{{ lookup(t, col) }}</td>{% endfor %}
+                        <td class="actions-cell" onclick="event.stopPropagation()">
+                            <button type="button" class="row-action" onclick="openSummary('{{ tnum }}')">Summarize</button>
+                        </td>
+                        {% for col in columns %}
+                            {% if col == 'status' %}
+                                {% set sval = lookup(t, col) %}
+                                <td><span class="pill pill-{{ sval | lower }}">{{ sval }}</span></td>
+                            {% else %}
+                                <td>{{ lookup(t, col) }}</td>
+                            {% endif %}
+                        {% endfor %}
                     </tr>
                     <tr class="comments-row" id="comments-{{ tnum }}" style="display:none;">
-                        <td colspan="{{ columns | length }}">
+                        <td colspan="{{ columns | length + 1 }}">
                             <div class="comments-pane">Loading…</div>
                         </td>
                     </tr>
@@ -189,6 +486,17 @@
     {% endif %}
 </div>
 
+<div id="summary-modal" class="modal-backdrop" style="display:none;" onclick="closeSummary(event)">
+    <div class="modal-card" onclick="event.stopPropagation()">
+        <div class="modal-head">
+            <h3 id="summary-title">Ticket Summary</h3>
+            <button type="button" class="modal-close" onclick="closeSummary()" aria-label="Close">&times;</button>
+        </div>
+        <div id="summary-body" class="modal-body">Loading…</div>
+        <div id="summary-meta" class="modal-meta"></div>
+    </div>
+</div>
+
 <script>
 function selectAll(name, on) {
     document.querySelectorAll('select[name="' + name + '"] option').forEach(o => o.selected = on);
@@ -212,35 +520,46 @@ async function toggleComments(row) {
     target.style.display = '';
     row.classList.add('expanded');
     if (_commentsLoaded.has(tnum)) return;
+    await loadComments(tnum);
+}
 
+async function loadComments(tnum) {
+    const target = document.getElementById('comments-' + tnum);
+    if (!target) return;
     const pane = target.querySelector('.comments-pane');
-    pane.textContent = '';
-    pane.className = 'comments-pane';
+    pane.innerHTML = '';
     const loading = document.createElement('div');
     loading.className = 'comments-loading';
-    loading.textContent = 'Loading…';
+    loading.innerHTML = '<span class="spinner"></span> Loading comments…';
     pane.appendChild(loading);
 
     try {
         const resp = await fetch('/api/tickets/' + encodeURIComponent(tnum) + '/comments');
         const data = await resp.json();
         if (!resp.ok) {
-            pane.innerHTML = '';
-            const err = document.createElement('div');
-            err.className = 'comments-error';
-            err.textContent = 'Error: ' + (data.error || resp.statusText);
-            pane.appendChild(err);
+            renderCommentsError(pane, tnum, data.error || resp.statusText);
             return;
         }
         renderComments(pane, data.notes || []);
         _commentsLoaded.add(tnum);
     } catch (e) {
-        pane.innerHTML = '';
-        const err = document.createElement('div');
-        err.className = 'comments-error';
-        err.textContent = 'Error: ' + e.message;
-        pane.appendChild(err);
+        renderCommentsError(pane, tnum, e.message);
     }
+}
+
+function renderCommentsError(pane, tnum, msg) {
+    pane.innerHTML = '';
+    const wrap = document.createElement('div');
+    wrap.className = 'comments-error';
+    const text = document.createElement('span');
+    text.textContent = 'Failed to load comments: ' + msg;
+    wrap.appendChild(text);
+    const retry = document.createElement('a');
+    retry.className = 'retry-link';
+    retry.textContent = 'Retry';
+    retry.onclick = () => loadComments(tnum);
+    wrap.appendChild(retry);
+    pane.appendChild(wrap);
 }
 
 function renderComments(pane, notes) {
@@ -284,6 +603,60 @@ function escapeHTML(s) {
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
     })[c]);
 }
+
+// ---------- Summary modal ---------------------------------------------------
+
+const _summaryCache = new Map();
+
+async function openSummary(tnum) {
+    const modal = document.getElementById('summary-modal');
+    const closeBtn = modal.querySelector('.modal-close');
+    const title = document.getElementById('summary-title');
+    const body = document.getElementById('summary-body');
+    const meta = document.getElementById('summary-meta');
+    title.textContent = 'Ticket #' + tnum + ' — Summary';
+    meta.textContent = '';
+    body.innerHTML = '<span class="spinner"></span> Generating summary… Claude can take a few seconds.';
+    modal.style.display = 'flex';
+    closeBtn.focus();
+
+    if (_summaryCache.has(tnum)) {
+        const data = _summaryCache.get(tnum);
+        body.textContent = data.summary;
+        meta.textContent = `Based on ${data.note_count} note(s) · cached locally`;
+        return;
+    }
+
+    try {
+        const resp = await fetch('/api/tickets/' + encodeURIComponent(tnum) + '/summary');
+        const data = await resp.json();
+        if (!resp.ok) {
+            body.textContent = 'Error: ' + (data.error || resp.statusText);
+            return;
+        }
+        body.textContent = data.summary;
+        meta.textContent = `Based on ${data.note_count} note(s) · ${data.cached ? 'server cache hit' : 'fresh from Claude'}`;
+        _summaryCache.set(tnum, data);
+    } catch (e) {
+        body.textContent = 'Error: ' + e.message;
+    }
+}
+
+function closeSummary(event) {
+    if (event && event.target && event.target.closest('.modal-card')
+        && !event.target.classList.contains('modal-close')) {
+        // click inside the card — ignore
+        return;
+    }
+    document.getElementById('summary-modal').style.display = 'none';
+}
+
+document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+        const m = document.getElementById('summary-modal');
+        if (m && m.style.display !== 'none') m.style.display = 'none';
+    }
+});
 </script>
 
 </body>

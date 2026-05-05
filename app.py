@@ -4,6 +4,7 @@ Routes:
   GET /                                       Search form + paginated results
   GET /tickets/export.csv                     CSV export of the current filter set
   GET /api/tickets/<ticket_number>/comments   JSON: comments for one ticket
+  GET /api/tickets/<ticket_number>/summary    JSON: Claude-generated summary
 """
 import csv
 import logging
@@ -16,6 +17,7 @@ from flask import Flask, Response, jsonify, render_template, request
 
 import cache
 import config
+from claude_client import ClaudeError, summarize_ticket
 from most2_client import MOST2Client, MOST2Error
 
 logging.basicConfig(
@@ -87,6 +89,17 @@ EXPORT_COLUMNS = [
     "last_comment",
 ]
 
+# Display names that don't fit the auto title-cased "_".replace(" ").title()
+# transform. Anything not listed falls back to that default in the template.
+COLUMN_LABELS = {
+    "ticket_id": "Ticket #",
+    "merchant_id": "Merchant #",
+    "cn": "CN",
+    "dba": "DBA",
+    "age_days": "Age (d)",
+    "sla_hours": "SLA (h)",
+}
+
 
 def parse_filters(args) -> Tuple[Dict[str, Any], List[str], List[str]]:
     """Read recognized filters from request args.
@@ -143,7 +156,7 @@ def fetch_results(
 
     seen: set = set()
     merged: List[Dict[str, Any]] = []
-    truncated_calls = 0
+    truncated_pairs: List[Tuple[str, str]] = []
 
     for group, rep in combos:
         per_call = {**upstream_filters}
@@ -153,7 +166,7 @@ def fetch_results(
             per_call["service_rep"] = rep
         rows = _client.search_tickets(per_call)
         if len(rows) >= 1000:
-            truncated_calls += 1
+            truncated_pairs.append((group, rep))
         for row in rows:
             tid = row.get("TicketNumber")
             if tid in seen:
@@ -172,10 +185,14 @@ def fetch_results(
     )
 
     warning = ""
-    if truncated_calls:
+    if truncated_pairs:
+        labelled = [
+            f"group={g or '(any)'} × rep={r or '(any)'}" for g, r in truncated_pairs
+        ]
         warning = (
-            f"{truncated_calls} of {len(combos)} upstream calls hit MOST2's "
-            f"1000-row cap; results may be incomplete. Narrow your filters."
+            f"{len(truncated_pairs)} of {len(combos)} upstream calls hit MOST2's "
+            f"1000-row cap and were truncated: {'; '.join(labelled)}. "
+            f"Add a date range or narrow problem/office filters on those slices."
         )
     return filtered, warning
 
@@ -270,6 +287,7 @@ def search():
         per_page=per_page,
         total_pages=total_pages,
         columns=EXPORT_COLUMNS,
+        column_labels=COLUMN_LABELS,
         lookup=lookup,
         page_url=page_url,
         export_query=urlencode(base_args),
@@ -311,6 +329,50 @@ def api_ticket_comments(ticket_number):
         logger.exception("comments fetch failed for %s", ticket_number)
         return jsonify({"error": str(e)}), 500
     return jsonify({"ticket_number": ticket_number, "notes": notes})
+
+
+@app.route("/api/tickets/<ticket_number>/summary")
+def api_ticket_summary(ticket_number):
+    """Return a Claude-generated summary of the ticket's comment thread.
+
+    Cached per ticket for SUMMARY_CACHE_TTL seconds. The cache key
+    includes the comment count so adding a new note invalidates the
+    summary on next view.
+    """
+    try:
+        notes = _client.get_ticket_comments(ticket_number)
+    except MOST2Error as e:
+        return jsonify({"error": f"MOST2 error: {e}"}), 502
+    except Exception as e:
+        logger.exception("comments fetch failed for %s", ticket_number)
+        return jsonify({"error": str(e)}), 500
+
+    cache_key = {"_type": "summary", "ticket": str(ticket_number), "n": len(notes)}
+    cached = cache.get(cache_key, config.SUMMARY_CACHE_TTL)
+    if cached is not None:
+        return jsonify({
+            "ticket_number": ticket_number,
+            "summary": cached[0]["summary"] if cached else "",
+            "note_count": len(notes),
+            "cached": True,
+        })
+
+    try:
+        summary = summarize_ticket(ticket_number, notes)
+    except ClaudeError as e:
+        logger.error("Claude summary failed for %s: %s", ticket_number, e)
+        return jsonify({"error": str(e)}), 502
+    except Exception as e:
+        logger.exception("summary failed for %s", ticket_number)
+        return jsonify({"error": str(e)}), 500
+
+    cache.put(cache_key, [{"summary": summary}])
+    return jsonify({
+        "ticket_number": ticket_number,
+        "summary": summary,
+        "note_count": len(notes),
+        "cached": False,
+    })
 
 
 def _csv_value(v: Any) -> str:

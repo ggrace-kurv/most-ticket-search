@@ -31,6 +31,7 @@ EMS_INFO_PATH = os.getenv("EMS_INFO_PATH", "/WebService.asmx/ticket_info_load_gr
 EMS_TICKET_STATUS = os.getenv("EMS_TICKET_STATUS", "O")
 
 SEARCH_CACHE_TTL = int(os.getenv("SEARCH_CACHE_TTL", "600"))
+SUMMARY_CACHE_TTL = int(os.getenv("SUMMARY_CACHE_TTL", "3600"))
 
 # Multi-select: hard cap on how many MOST2 calls one search can fan out to.
 # Combinations = len(selected_reps) * len(selected_groups). Each call is a
