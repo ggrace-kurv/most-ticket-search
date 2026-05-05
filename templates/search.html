@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>MOST2 Ticket Search</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='main.css') }}">
+    <style>
+        body { font-family: var(--font-primary, system-ui, sans-serif); background: var(--color-background, #fffaf3); margin: 0; padding: 24px; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        h1 { color: var(--color-primary, #005300); margin-bottom: 16px; }
+        .filters { background: white; border-radius: 8px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-bottom: 20px; }
+        .filter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 12px; }
+        .filter-grid label { display: flex; flex-direction: column; font-size: 12px; color: #555; gap: 4px; }
+        .filter-grid input, .filter-grid select { padding: 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; }
+        .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+        .btn { padding: 8px 16px; border-radius: 4px; border: none; cursor: pointer; font-size: 14px; text-decoration: none; display: inline-block; }
+        .btn-primary { background: var(--color-primary, #005300); color: white; }
+        .btn-secondary { background: #eee; color: #333; }
+        .btn-export { background: var(--color-orange, #ef9000); color: white; }
+        .btn[disabled], .btn.disabled { opacity: 0.5; pointer-events: none; }
+        .summary { display: flex; gap: 24px; padding: 12px 20px; background: #f0f6f0; border-radius: 8px; margin-bottom: 16px; align-items: center; }
+        .summary .num { font-size: 20px; font-weight: 600; color: var(--color-primary, #005300); }
+        .summary .lbl { font-size: 12px; color: #666; }
+        .error { background: #fee; border-left: 4px solid #c00; padding: 12px 16px; margin-bottom: 16px; border-radius: 4px; }
+        table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+        th { background: var(--color-primary, #005300); color: white; padding: 10px 8px; text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+        td { padding: 8px; border-top: 1px solid #eee; font-size: 13px; }
+        tr:hover td { background: #fafafa; }
+        .pagination { display: flex; gap: 4px; padding: 16px 0; align-items: center; flex-wrap: wrap; }
+        .pagination a, .pagination span { padding: 6px 12px; border: 1px solid #ddd; border-radius: 4px; text-decoration: none; color: #333; font-size: 13px; }
+        .pagination .current { background: var(--color-primary, #005300); color: white; border-color: var(--color-primary, #005300); }
+        .pagination .disabled { opacity: 0.4; pointer-events: none; }
+        .empty { text-align: center; padding: 48px 16px; color: #666; }
+        .warning { background: #fff8dc; border-left: 4px solid #d4a017; padding: 12px 16px; margin-bottom: 16px; border-radius: 4px; font-size: 13px; }
+        .multiselect-block { grid-column: span 2; }
+        .multiselect-block .checks, .multiselect-block select[multiple] {
+            display: block; max-height: 110px; overflow-y: auto;
+            background: white; border: 1px solid #ccc; border-radius: 4px; padding: 6px 8px;
+        }
+        .multiselect-block .checks label { flex-direction: row; align-items: center; gap: 6px; font-size: 13px; padding: 2px 0; }
+        .multiselect-block .checks input { margin: 0; }
+        .multiselect-actions { font-size: 11px; margin-top: 4px; }
+        .multiselect-actions a { color: var(--color-primary, #005300); margin-right: 8px; cursor: pointer; }
+        tr.ticket-row { cursor: pointer; }
+        tr.ticket-row.expanded td { background: #f0f6f0; font-weight: 500; }
+        tr.comments-row td { padding: 0; background: #fafafa; }
+        .comments-pane { padding: 16px 20px; border-top: 2px solid var(--color-primary, #005300); }
+        .comment-item { padding: 12px 0; border-bottom: 1px dashed #ddd; }
+        .comment-item:last-child { border-bottom: none; }
+        .comment-meta { font-size: 11px; color: #666; margin-bottom: 6px; }
+        .comment-meta strong { color: #333; }
+        .comment-body { font-size: 13px; line-height: 1.5; }
+        .comment-body p { margin: 0 0 6px 0; }
+        .comments-loading { color: #888; font-style: italic; padding: 12px; }
+        .comments-error { color: #c00; padding: 12px; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>MOST2 Ticket Search</h1>
+
+    <form method="get" class="filters">
+        <input type="hidden" name="submitted" value="1">
+        <div class="filter-grid">
+            <label>Ticket ID
+                <input type="text" name="ticket_id" value="{{ filters.get('ticket_id', '') }}">
+            </label>
+            <label>Merchant ID
+                <input type="text" name="merchant_id" value="{{ filters.get('merchant_id', '') }}">
+            </label>
+            <label>CN
+                <input type="text" name="cn" value="{{ filters.get('cn', '') }}">
+            </label>
+            <label>Problem
+                <input type="text" name="problem" value="{{ filters.get('problem', '') }}">
+            </label>
+            <label>Office
+                <input type="text" name="office" value="{{ filters.get('office', '') }}">
+            </label>
+            <label>Status
+                <select name="status">
+                    {% set s = filters.get('status', '') %}
+                    <option value="B" {% if s in ('', 'B') %}selected{% endif %}>Open + Hold (default)</option>
+                    <option value="O" {% if s == 'O' %}selected{% endif %}>Open</option>
+                    <option value="H" {% if s == 'H' %}selected{% endif %}>Hold</option>
+                    <option value="C" {% if s == 'C' %}selected{% endif %}>Closed</option>
+                </select>
+            </label>
+            <label>Date From
+                <input type="date" name="date_from" value="{{ filters.get('date_from', '') }}">
+            </label>
+            <label>Date To
+                <input type="date" name="date_to" value="{{ filters.get('date_to', '') }}">
+            </label>
+            <label class="multiselect-block">Ownership Groups (multi-select; Ctrl/Cmd-click)
+                <select name="ownership_groups" multiple size="5">
+                    {% for g in all_groups %}
+                        <option value="{{ g }}" {% if g in selected_groups %}selected{% endif %}>{{ g }}</option>
+                    {% endfor %}
+                </select>
+                <div class="multiselect-actions">
+                    <a onclick="selectAll('ownership_groups', true)">Select all</a>
+                    <a onclick="selectAll('ownership_groups', false)">Clear</a>
+                </div>
+            </label>
+            <label class="multiselect-block">Service Reps
+                <div class="checks">
+                    {% set checked_reps = selected_reps if submitted else (team_reps | map('string') | list) %}
+                    {% for r in team_reps %}
+                        <label>
+                            <input type="checkbox" name="service_reps" value="{{ r }}"
+                                   {% if r in checked_reps %}checked{% endif %}> {{ r }}
+                        </label>
+                    {% endfor %}
+                </div>
+                <div class="multiselect-actions">
+                    <a onclick="checkAll('service_reps', true)">My team</a>
+                    <a onclick="checkAll('service_reps', false)">Clear</a>
+                </div>
+            </label>
+        </div>
+        <div class="actions">
+            <button type="submit" class="btn btn-primary">Search</button>
+            <a href="/" class="btn btn-secondary">Clear</a>
+            {% if submitted and total > 0 %}
+                <a href="/tickets/export.csv?{{ export_query }}" class="btn btn-export">Download CSV</a>
+            {% else %}
+                <span class="btn btn-export disabled">Download CSV</span>
+            {% endif %}
+        </div>
+    </form>
+
+    {% if error %}
+        <div class="error">{{ error }}</div>
+    {% endif %}
+    {% if warning %}
+        <div class="warning">{{ warning }}</div>
+    {% endif %}
+
+    {% if submitted and not error %}
+        <div class="summary">
+            <div><div class="num">{{ total }}</div><div class="lbl">Tickets</div></div>
+            <div><div class="num">{{ page }}/{{ total_pages }}</div><div class="lbl">Page</div></div>
+            <div><div class="num">{{ per_page }}</div><div class="lbl">Per page</div></div>
+        </div>
+
+        {% if tickets %}
+            <table>
+                <thead>
+                    <tr>
+                        {% for col in columns %}<th>{{ col.replace('_', ' ').title() }}</th>{% endfor %}
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for t in tickets %}
+                    {% set tnum = lookup(t, 'ticket_id') %}
+                    <tr class="ticket-row" data-ticket="{{ tnum }}" onclick="toggleComments(this)">
+                        {% for col in columns %}<td>{{ lookup(t, col) }}</td>{% endfor %}
+                    </tr>
+                    <tr class="comments-row" id="comments-{{ tnum }}" style="display:none;">
+                        <td colspan="{{ columns | length }}">
+                            <div class="comments-pane">Loading…</div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+
+            <div class="pagination">
+                {% if page > 1 %}
+                    <a href="{{ page_url(1) }}">First</a>
+                    <a href="{{ page_url(page - 1) }}">Prev</a>
+                {% else %}
+                    <span class="disabled">First</span>
+                    <span class="disabled">Prev</span>
+                {% endif %}
+                <span class="current">Page {{ page }} of {{ total_pages }}</span>
+                {% if page < total_pages %}
+                    <a href="{{ page_url(page + 1) }}">Next</a>
+                    <a href="{{ page_url(total_pages) }}">Last</a>
+                {% else %}
+                    <span class="disabled">Next</span>
+                    <span class="disabled">Last</span>
+                {% endif %}
+            </div>
+        {% else %}
+            <div class="empty">No tickets matched your filters.</div>
+        {% endif %}
+    {% endif %}
+</div>
+
+<script>
+function selectAll(name, on) {
+    document.querySelectorAll('select[name="' + name + '"] option').forEach(o => o.selected = on);
+}
+function checkAll(name, on) {
+    document.querySelectorAll('input[name="' + name + '"]').forEach(c => c.checked = on);
+}
+
+const _commentsLoaded = new Set();
+
+async function toggleComments(row) {
+    const tnum = row.dataset.ticket;
+    const target = document.getElementById('comments-' + tnum);
+    if (!target) return;
+    const showing = target.style.display !== 'none';
+    if (showing) {
+        target.style.display = 'none';
+        row.classList.remove('expanded');
+        return;
+    }
+    target.style.display = '';
+    row.classList.add('expanded');
+    if (_commentsLoaded.has(tnum)) return;
+
+    const pane = target.querySelector('.comments-pane');
+    pane.textContent = '';
+    pane.className = 'comments-pane';
+    const loading = document.createElement('div');
+    loading.className = 'comments-loading';
+    loading.textContent = 'Loading…';
+    pane.appendChild(loading);
+
+    try {
+        const resp = await fetch('/api/tickets/' + encodeURIComponent(tnum) + '/comments');
+        const data = await resp.json();
+        if (!resp.ok) {
+            pane.innerHTML = '';
+            const err = document.createElement('div');
+            err.className = 'comments-error';
+            err.textContent = 'Error: ' + (data.error || resp.statusText);
+            pane.appendChild(err);
+            return;
+        }
+        renderComments(pane, data.notes || []);
+        _commentsLoaded.add(tnum);
+    } catch (e) {
+        pane.innerHTML = '';
+        const err = document.createElement('div');
+        err.className = 'comments-error';
+        err.textContent = 'Error: ' + e.message;
+        pane.appendChild(err);
+    }
+}
+
+function renderComments(pane, notes) {
+    pane.innerHTML = '';
+    if (!notes.length) {
+        const empty = document.createElement('div');
+        empty.className = 'comments-loading';
+        empty.textContent = 'No comments on this ticket.';
+        pane.appendChild(empty);
+        return;
+    }
+    notes.forEach(n => {
+        const item = document.createElement('div');
+        item.className = 'comment-item';
+
+        const meta = document.createElement('div');
+        meta.className = 'comment-meta';
+        const parts = [];
+        if (n.DateAdded) parts.push(escapeHTML(n.DateAdded));
+        if (n.AddedBy) parts.push('by <strong>' + escapeHTML(n.AddedBy) + '</strong>');
+        if (n.OwnershipGroup) parts.push(escapeHTML(n.OwnershipGroup));
+        if (n.ProblemType) parts.push(escapeHTML(n.ProblemType));
+        if (n.EscalationLvl) parts.push('Esc: ' + escapeHTML(n.EscalationLvl));
+        meta.innerHTML = parts.join(' &middot; ');
+
+        const body = document.createElement('div');
+        body.className = 'comment-body';
+        // Comments come back as HTML from MOST2 (their own UI renders it as
+        // HTML). Internal users + internal data → low XSS risk; matches
+        // what MOST2's UI displays.
+        body.innerHTML = n.Comments || '';
+
+        item.appendChild(meta);
+        item.appendChild(body);
+        pane.appendChild(item);
+    });
+}
+
+function escapeHTML(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[c]);
+}
+</script>
+
+</body>
+</html>
