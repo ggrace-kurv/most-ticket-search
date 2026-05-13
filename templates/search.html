@@ -70,6 +70,9 @@
             font-size: 12px; font-weight: 600;
             letter-spacing: 0.02em;
         }
+        .user-chip .logout-form {
+            display: inline-flex; margin: 0; padding: 0;
+        }
         .user-chip .logout-link {
             color: var(--c-primary);
             background: white;
@@ -78,11 +81,18 @@
             padding: 3px 10px;
             border-radius: 999px;
             font-weight: 500;
-            transition: background .12s, border-color .12s;
+            font-size: 12px;
+            font-family: inherit;
+            letter-spacing: 0.02em;
+            cursor: pointer;
+            transition: background .12s, border-color .12s, color .12s;
         }
         .user-chip .logout-link:hover {
             background: var(--c-primary); color: white;
             border-color: var(--c-primary);
+        }
+        .user-chip .logout-link:focus-visible {
+            outline: 2px solid var(--c-primary); outline-offset: 2px;
         }
 
         /* Filter card */
@@ -575,7 +585,9 @@
             {% if current_user %}
                 <span class="user-chip" title="Signed-in MOST2 account">
                     {{ current_user }}
-                    <a href="{{ url_for('logout') }}" class="logout-link">Sign out</a>
+                    <form method="post" action="{{ url_for('logout') }}" class="logout-form">
+                        <button type="submit" class="logout-link">Sign out</button>
+                    </form>
                 </span>
             {% endif %}
         </div>

@@ -856,9 +856,15 @@ def login():
     )
 
 
-@app.route("/logout", methods=["GET", "POST"])
+@app.route("/logout", methods=["POST"])
 def logout():
-    """Drop the cached MOST2 client and clear the Flask session."""
+    """Drop the cached MOST2 client and clear the Flask session.
+
+    POST-only because a GET logout is a CSRF vector: an attacker who
+    can lure a logged-in rep to visit a page they control could include
+    `<img src="/logout">` and forcibly sign them out. SameSite=Lax
+    blocks cross-site POSTs, so requiring POST closes that hole.
+    """
     user = session.get("most2_username")
     _drop_client()
     session.clear()
