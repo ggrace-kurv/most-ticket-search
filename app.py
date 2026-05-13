@@ -15,6 +15,7 @@ import csv
 import logging
 import os
 import secrets
+import sys
 import threading
 import time
 from collections import OrderedDict
@@ -22,7 +23,7 @@ from datetime import datetime, timedelta
 from functools import wraps
 from io import StringIO
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 from flask import (
     Flask, Response, jsonify, redirect, render_template,
@@ -45,14 +46,58 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.secret_key = config.SECRET_KEY
 
-# Server-side sessions via flask-session: the user's MOST2 password is
-# stored in a file under SESSION_FILE_DIR, and only an opaque session id
-# rides on the wire. Lifetime caps how long a stolen cookie is useful.
+# Server-side sessions via flask-session: an opaque session id rides
+# in the cookie; everything else (including the encrypted MOST2
+# password) lives in SESSION_FILE_DIR. Even with at-rest encryption,
+# we want the directory itself to be unreadable by other local users.
 os.makedirs(config.SESSION_FILE_DIR, exist_ok=True)
 try:
     os.chmod(config.SESSION_FILE_DIR, 0o700)
 except OSError:
     pass  # already restricted, or fs doesn't support chmod (eg. /mnt/c)
+
+
+def _enforce_session_dir_perms():
+    """Refuse to start in production if SESSION_FILE_DIR is too open.
+
+    On a POSIX filesystem the chmod above lands us at 0o700. On WSL
+    /mnt/c paths the chmod is a no-op and the directory effectively
+    inherits 0o777. Even with encrypted password fields the dir name
+    listing leaks who logged in and when, and a misconfigured
+    SECRET_KEY-shared deploy could let someone read passwords.
+
+    Strict by default in non-debug mode. Set SESSION_PERMS_STRICT=false
+    to override (eg. for the existing /mnt/c WSL deployment) — at-rest
+    encryption is doing most of the work anyway.
+    """
+    try:
+        mode = os.stat(config.SESSION_FILE_DIR).st_mode & 0o777
+    except OSError:
+        return
+    if not (mode & 0o077):
+        return
+    msg = (
+        f"SESSION_FILE_DIR {config.SESSION_FILE_DIR} has mode {oct(mode)} — "
+        f"group/other bits are set. Passwords are encrypted at rest, but the "
+        f"directory should still be 0700 to avoid leaking session metadata."
+    )
+    if config.FLASK_DEBUG:
+        logger.warning("%s (OK for debug)", msg)
+        return
+    strict = os.getenv("SESSION_PERMS_STRICT", "true").lower() != "false"
+    if not strict:
+        logger.error("%s — SESSION_PERMS_STRICT=false, continuing anyway", msg)
+        return
+    print(
+        f"FATAL: {msg} Move to a POSIX-compliant filesystem "
+        f"(eg. /var/lib/most-ticket-search/sessions) or set "
+        f"SESSION_PERMS_STRICT=false in .env to override.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+_enforce_session_dir_perms()
 app.config["SESSION_TYPE"] = "filesystem"
 app.config["SESSION_FILE_DIR"] = config.SESSION_FILE_DIR
 app.config["SESSION_PERMANENT"] = True
@@ -110,6 +155,48 @@ _CLIENTS_MAX = int(os.getenv("MAX_CACHED_CLIENTS", "500"))
 _CLIENTS_TTL_SECONDS = config.SESSION_LIFETIME_SECONDS
 _clients: "OrderedDict[str, Tuple[MOST2Client, float]]" = OrderedDict()
 _clients_lock = threading.Lock()
+
+
+def _is_safe_next_url(next_url: str) -> bool:
+    """Decide whether a ?next=… value is safe to redirect to after login.
+
+    The previous check was `startswith("/") and not startswith("//")`.
+    That rejects scheme-relative URLs but misses backslash variants
+    that some browsers normalize (eg. `/\\evil.com/path`) and control
+    characters used in header smuggling. urlparse drops both.
+    """
+    if not next_url:
+        return False
+    if any(c in next_url for c in ("\\", "\r", "\n", "\t")):
+        return False
+    parsed = urlparse(next_url)
+    if parsed.scheme or parsed.netloc:
+        return False
+    return next_url.startswith("/") and not next_url.startswith("//")
+
+
+def _check_same_origin() -> Optional[Tuple[Any, int]]:
+    """Reject state-changing requests whose Origin doesn't match host.
+
+    SameSite=Lax already blocks most cross-site POSTs, but a
+    misconfigured reverse proxy or a future relaxation could let one
+    through; the Origin check is the textbook CSRF defence and is
+    essentially free. Same-origin requests from older clients that
+    omit Origin are allowed — they're indistinguishable from server-
+    generated requests.
+    """
+    origin = request.headers.get("Origin", "")
+    if not origin:
+        return None
+    expected = urlparse(request.host_url).netloc.lower()
+    actual = urlparse(origin).netloc.lower()
+    if actual != expected:
+        logger.warning(
+            "Rejected cross-origin %s %s: Origin=%s expected=%s",
+            request.method, request.path, origin, expected,
+        )
+        return jsonify({"error": "Origin mismatch."}), 403
+    return None
 
 
 def _log_internal_error(prefix: str, exc: Exception) -> str:
@@ -772,6 +859,13 @@ def api_ticket_ask(ticket_number):
     we re-fetch the comments and re-prompt Claude. Comments are pulled
     fresh each call so newly-added notes are reflected immediately.
     """
+    # Only state-changing endpoint in the app — defence-in-depth Origin
+    # check on top of SameSite=Lax cookies. (Comments / Summary are GETs
+    # and don't need it.)
+    origin_block = _check_same_origin()
+    if origin_block is not None:
+        return origin_block
+
     payload = request.get_json(silent=True) or {}
     question = (payload.get("question") or "").strip()
     summary = (payload.get("summary") or "").strip()
@@ -831,18 +925,11 @@ def _csv_value(v: Any) -> str:
 
 @app.route("/health")
 def health():
-    """Liveness probe. Public — auth health is checked separately."""
-    return {"ok": True, "logged_in_users": _logged_in_count()}
-
-
-def _logged_in_count() -> int:
-    """Best-effort count of cached MOST2 clients (one per active session).
-
-    Doesn't include sessions whose process restarted before they made a
-    request — those rebuild lazily on next visit.
-    """
-    with _clients_lock:
-        return len(_clients)
+    """Liveness probe. Public — intentionally tells external callers
+    nothing beyond "the process is up". Earlier versions returned the
+    count of cached clients, which gave an unauthenticated attacker
+    timing data about active sessions; removed."""
+    return {"ok": True}
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -909,9 +996,11 @@ def login():
                         )
                     _clients[user_id] = (client, time.time())
                 logger.info("user logged in: %s", client.username_bare)
-                # Only allow same-origin next paths so we don't open an
-                # open-redirect on /login?next=https://evil/.
-                if next_url and next_url.startswith("/") and not next_url.startswith("//"):
+                # Only allow same-origin relative paths — _is_safe_next_url
+                # rejects schemes, netlocs, and backslash/control-char
+                # tricks that some browsers normalize past simple startswith
+                # checks.
+                if _is_safe_next_url(next_url):
                     return redirect(next_url)
                 return redirect(url_for("search"))
 
