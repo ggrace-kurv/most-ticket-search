@@ -3,7 +3,6 @@
 <head>
     <meta charset="UTF-8">
     <title>Sign in · MOST2 Ticket Search</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='main.css') }}">
     <style>
         :root {
             --c-primary: #005300;
@@ -42,6 +41,9 @@
             padding: 32px 36px;
             box-shadow: var(--shadow-md);
             width: 100%;
+            /* min-width keeps the card legible on ~320px viewports where
+               the 24px body margins eat into the 380px max-width. */
+            min-width: 280px;
             max-width: 380px;
             margin: 24px;
         }
@@ -79,7 +81,10 @@
         .field input:focus {
             outline: none;
             border-color: var(--c-primary);
-            box-shadow: 0 0 0 3px rgba(0, 83, 0, 0.15);
+            /* Stronger focus ring (was 0.15 alpha → 2.5:1 against
+               #f7f6f1 background). 0.4 alpha brings the ring to
+               ~3.4:1, meeting WCAG SC 1.4.11 for non-text contrast. */
+            box-shadow: 0 0 0 3px rgba(0, 83, 0, 0.4);
         }
         .btn-primary {
             width: 100%;
@@ -123,7 +128,7 @@
         <p class="sub">Sign in with your MOST2 account.</p>
 
         {% if error %}
-            <div class="login-error">{{ error }}</div>
+            <div class="login-error" role="alert">{{ error }}</div>
         {% endif %}
 
         <input type="hidden" name="next" value="{{ next_url }}">
@@ -140,7 +145,7 @@
         <button type="submit" class="btn-primary">Sign in</button>
 
         <p class="login-hint">
-            Same credentials you use on MOST2. Your password is stored only for the duration of your session.
+            Your password is kept only for the duration of your session. Use the same credentials you use on MOST2.
         </p>
     </form>
 </body>
