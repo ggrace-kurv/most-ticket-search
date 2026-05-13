@@ -62,6 +62,38 @@ app.config["SESSION_USE_SIGNER"] = True
 Session(app)
 
 
+# Defence-in-depth headers applied to every response. CSP is the
+# load-bearing one: it constrains where scripts / styles / images can
+# load from so a successful HTML injection (eg. a comment that slips
+# past DOMPurify) can't reach an attacker-controlled script. We allow
+# inline scripts and styles because the dashboard template has many
+# onclick= handlers and a large inline <style> block; tightening that
+# to nonces is a future hardening pass tracked in the audit notes.
+_BASE_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "font-src 'self' data:; "
+    "connect-src 'self'; "
+    "object-src 'none'; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
+    "frame-ancestors 'none';"
+)
+
+
+@app.after_request
+def _set_security_headers(response):
+    response.headers.setdefault("Content-Security-Policy", _BASE_CSP)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    # Belt-and-suspenders for frame-ancestors above; older browsers and
+    # some scanners still look at X-Frame-Options.
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    return response
+
+
 # Per-user MOST2 clients. Building a MOST2Client costs nothing, but
 # reusing the underlying requests.Session lets us reuse the NTLM handshake
 # and the (S(...)) session id across calls — which matters when a user
