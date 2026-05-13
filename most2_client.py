@@ -5,6 +5,7 @@ Pattern (verified against existing MOST2Integration):
   2. POST /(S(<id>))/WebService.asmx/<endpoint> with JSON body
   3. Response is {"d": "<json string>"} -> json.loads(data["d"])
 """
+import html as _html
 import json
 import logging
 import re
@@ -33,29 +34,76 @@ class MOST2Error(Exception):
     """Raised when MOST2 returns an unexpected response."""
 
 
+class MOST2AuthError(MOST2Error):
+    """Raised when MOST2 rejects the credentials (401/403 on login).
+
+    Distinguished from MOST2Error so the Flask layer can drop the user's
+    session and redirect them back to /login rather than surfacing a
+    generic upstream error.
+    """
+
+
 class MOST2Client:
-    def __init__(self):
+    def __init__(self, username: str, password: str):
+        """Build a MOST2 client for one user's credentials.
+
+        `username` may be passed as a bare login (`gregg`) or as
+        `domain\\user` (`fdc\\gregg`). NTLM requires the domain form, so
+        we prepend `fdc\\` if the caller didn't.
+        """
+        if not username or not password:
+            raise MOST2AuthError("Username and password are required.")
         self.session = requests.Session()
-        username = config.USERNAME or ""
-        # NTLM expects domain\user; if .env username has no backslash, prepend fdc\
-        if username and "\\" not in username:
+        if "\\" not in username:
             username = f"fdc\\{username}"
         self.username = username
-        self.session.auth = HttpNtlmAuth(username, config.PASSWORD)
+        # Bare-name form for cache keys / log lines (don't reveal domain).
+        self.username_bare = username.split("\\", 1)[1]
+        self.session.auth = HttpNtlmAuth(username, password)
         self.session_id: Optional[str] = None
         self.last_login = 0.0
+        # Display name parsed from MOST2's TicketSearch.aspx after login.
+        # Powers "My Tickets" — MOST2 stores the user's service-rep name
+        # (e.g. "Greg Grace") in a hidden field, separate from the bare
+        # login (e.g. "ggrace"). Populated by login(), empty if parse failed.
+        self.full_name: str = ""
 
     def login(self) -> None:
-        """Get a fresh session id from MOST2."""
+        """Get a fresh session id from MOST2.
+
+        Raises MOST2AuthError on 401/403 (bad creds) and MOST2Error on
+        anything else. Also parses the logged-in user's display name out
+        of the TicketSearch.aspx page so callers can power features like
+        "My Tickets" without a separate round-trip.
+        """
         url = f"{config.EMS_BASE_URL}/TicketSearch.aspx"
         resp = self.session.get(url, headers=_BROWSER_HEADERS, timeout=30)
+        if resp.status_code in (401, 403):
+            raise MOST2AuthError(
+                f"MOST2 rejected credentials for {self.username_bare} "
+                f"(HTTP {resp.status_code})."
+            )
         if resp.status_code != 200:
             raise MOST2Error(f"Login failed: HTTP {resp.status_code}")
         if "(S(" not in resp.url:
             raise MOST2Error("Login response missing session id")
         self.session_id = resp.url.split("(S(")[1].split("))")[0]
         self.last_login = time.time()
-        logger.info("MOST2 login OK, session=%s", self.session_id[:8] + "...")
+        self.full_name = _parse_full_name(resp.text)
+        if not self.full_name:
+            # Not fatal — search still works. Just log so a misfire of the
+            # parser (eg. MOST2 markup change) is visible without breaking
+            # the dashboard.
+            logger.warning(
+                "MOST2 hdnFullname not found in TicketSearch.aspx for %s; "
+                "'My Tickets' will be hidden for this user",
+                self.username_bare,
+            )
+        logger.info(
+            "MOST2 login OK user=%s name=%s session=%s",
+            self.username_bare, self.full_name or "(unknown)",
+            self.session_id[:8] + "...",
+        )
 
     def _ensure_session(self) -> None:
         if not self.session_id:
@@ -71,11 +119,18 @@ class MOST2Client:
         }
         resp = self.session.post(url, headers=headers, json=payload, timeout=60)
         # MOST2 occasionally invalidates session ids; retry once on 302/401.
+        # If the re-login itself raises MOST2AuthError, let it propagate so
+        # the Flask layer can clear the user's session.
         if resp.status_code in (302, 401):
-            logger.warning("MOST2 session expired, re-logging in")
+            logger.warning("MOST2 session expired for %s, re-logging in", self.username_bare)
             self.login()
             url = f"{config.EMS_BASE_URL}/(S({self.session_id})){path}"
             resp = self.session.post(url, headers=headers, json=payload, timeout=60)
+            if resp.status_code in (302, 401):
+                raise MOST2AuthError(
+                    f"MOST2 still rejecting requests after re-login for "
+                    f"{self.username_bare} (HTTP {resp.status_code})."
+                )
 
         if not resp.ok:
             # ASP.NET ASMX returns the actual reason in the body (often JSON
@@ -186,6 +241,38 @@ class MOST2Client:
         for note in result:
             note["DateAdded"] = parse_aspnet_date(note.get("DateAdded"))
         return result
+
+
+# Matches the <input ... id="ctl00_hdnFullname" ... value="Greg Grace" />
+# field MOST2 emits on every authenticated page. Attribute order varies,
+# so we don't anchor on it — we look for the id and then the nearest
+# value attribute on the same tag.
+_FULL_NAME_RE = re.compile(
+    r'<input\b[^>]*\bid\s*=\s*"ctl00_hdnFullname"[^>]*?\bvalue\s*=\s*"([^"]*)"',
+    re.IGNORECASE,
+)
+# Fallback: if MOST2 reorders so `value` comes before `id`, the regex
+# above misses. Try the reversed order too.
+_FULL_NAME_RE_ALT = re.compile(
+    r'<input\b[^>]*\bvalue\s*=\s*"([^"]*)"[^>]*?\bid\s*=\s*"ctl00_hdnFullname"',
+    re.IGNORECASE,
+)
+
+
+def _parse_full_name(page_html: str) -> str:
+    """Extract the logged-in user's display name from a MOST2 page.
+
+    Returns "" if no hdnFullname field was found or its value was empty
+    — caller should treat that as "unknown" rather than fail. HTML
+    entities are decoded (eg. "Mi&#39;Shauna Swain" → "Mi'Shauna Swain")
+    so the value can be used directly as a MOST2 ddlServiceRep filter.
+    """
+    if not page_html:
+        return ""
+    m = _FULL_NAME_RE.search(page_html) or _FULL_NAME_RE_ALT.search(page_html)
+    if not m:
+        return ""
+    return _html.unescape(m.group(1)).strip()
 
 
 def _to_us_date(iso_or_blank: str) -> str:

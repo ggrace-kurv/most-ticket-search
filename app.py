@@ -1,24 +1,37 @@
 """MOST2 Ticket Search — direct, no database.
 
 Routes:
-  GET /                                       Search form + paginated results
-  GET /tickets/export.csv                     CSV export of the current filter set
-  GET /api/tickets/<ticket_number>/comments   JSON: comments for one ticket
-  GET /api/tickets/<ticket_number>/summary    JSON: Claude-generated summary
+  GET  /                                       Search form + paginated results
+  GET  /login                                  Show login form
+  POST /login                                  Validate creds + start session
+  GET  /logout                                 Clear session, return to /login
+  GET  /tickets/export.csv                     CSV export of the current filter set
+  GET  /api/tickets/<ticket_number>/comments   JSON: comments for one ticket
+  GET  /api/tickets/<ticket_number>/summary    JSON: Claude-generated summary
+  POST /api/tickets/<ticket_number>/ask        JSON: follow-up question
+  GET  /health                                 Liveness probe (no auth)
 """
 import csv
 import logging
-from datetime import datetime
+import os
+import secrets
+import threading
+from datetime import datetime, timedelta
+from functools import wraps
 from io import StringIO
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlencode
 
-from flask import Flask, Response, jsonify, render_template, request
+from flask import (
+    Flask, Response, jsonify, redirect, render_template,
+    request, session, url_for,
+)
+from flask_session import Session
 
 import cache
 import config
 from claude_client import ClaudeError, _strip_html, answer_followup, summarize_ticket
-from most2_client import MOST2Client, MOST2Error
+from most2_client import MOST2AuthError, MOST2Client, MOST2Error
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,9 +42,103 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.secret_key = config.SECRET_KEY
 
-# Single shared client. NTLM session is reused across requests; the client
-# re-logs-in automatically when MOST2 returns 302/401.
-_client = MOST2Client()
+# Server-side sessions via flask-session: the user's MOST2 password is
+# stored in a file under SESSION_FILE_DIR, and only an opaque session id
+# rides on the wire. Lifetime caps how long a stolen cookie is useful.
+os.makedirs(config.SESSION_FILE_DIR, exist_ok=True)
+try:
+    os.chmod(config.SESSION_FILE_DIR, 0o700)
+except OSError:
+    pass  # already restricted, or fs doesn't support chmod (eg. /mnt/c)
+app.config["SESSION_TYPE"] = "filesystem"
+app.config["SESSION_FILE_DIR"] = config.SESSION_FILE_DIR
+app.config["SESSION_PERMANENT"] = True
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(seconds=config.SESSION_LIFETIME_SECONDS)
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = config.SESSION_COOKIE_SECURE
+app.config["SESSION_USE_SIGNER"] = True
+Session(app)
+
+
+# Per-user MOST2 clients. Building a MOST2Client costs nothing, but
+# reusing the underlying requests.Session lets us reuse the NTLM handshake
+# and the (S(...)) session id across calls — which matters when a user
+# clicks through 5+ pages in a minute. Keyed by a per-login UUID stored
+# in session["user_id"]; cleared on logout and on auth failure.
+_clients: Dict[str, MOST2Client] = {}
+_clients_lock = threading.Lock()
+
+
+def _get_client() -> Optional[MOST2Client]:
+    """Return the MOST2Client for the current user, building it if necessary.
+
+    Reads creds from the Flask session (filesystem-backed). Returns None
+    when there's no logged-in user — callers should already have run
+    @require_login, so this is mainly a safety net for the /health route.
+    """
+    user_id = session.get("user_id")
+    username = session.get("most2_username")
+    password = session.get("most2_password")
+    if not (user_id and username and password):
+        return None
+    with _clients_lock:
+        client = _clients.get(user_id)
+        if client is not None:
+            return client
+        client = MOST2Client(username, password)
+        _clients[user_id] = client
+        return client
+
+
+def _drop_client() -> None:
+    """Forget the in-memory MOST2Client for the current session.
+
+    Called on logout and when MOST2 rejects mid-session credentials.
+    Safe to call when there's no client cached.
+    """
+    user_id = session.get("user_id")
+    if not user_id:
+        return
+    with _clients_lock:
+        _clients.pop(user_id, None)
+
+
+def require_login(view):
+    """Redirect anonymous users to /login (HTML) or return 401 JSON (APIs).
+
+    The split keeps `fetch()` calls in the frontend from following a 302
+    into the login page's HTML — they get a clean 401 they can react to.
+    """
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        if not session.get("most2_username") or not session.get("most2_password"):
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "Not authenticated."}), 401
+            # Preserve the originally-requested URL (path + query) so the
+            # post-login redirect lands the user back where they were.
+            target = request.full_path.rstrip("?") if request.query_string else request.path
+            return redirect(url_for("login", next=target))
+        return view(*args, **kwargs)
+    return wrapper
+
+
+@app.errorhandler(MOST2AuthError)
+def _handle_most2_auth_error(err: MOST2AuthError):
+    """Drop the user's session if MOST2 rejects their creds mid-flight.
+
+    The most2_client distinguishes auth failures (MOST2AuthError) from
+    other upstream errors (MOST2Error) precisely so this handler fires
+    only when the user genuinely needs to log in again, not on every
+    transient 5xx.
+    """
+    logger.warning("MOST2 auth failure for session user_id=%s: %s",
+                   session.get("user_id"), err)
+    _drop_client()
+    session.clear()
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "Your MOST2 session expired. Please sign in again."}), 401
+    return redirect(url_for("login"))
 
 
 # Single-value filter keys. Multi-select filters (ownership_groups,
@@ -128,6 +235,7 @@ def parse_filters(args) -> Tuple[Dict[str, Any], List[str], List[str]]:
 
 
 def fetch_results(
+    client: MOST2Client,
     base_filters: Dict[str, Any],
     groups: List[str],
     reps: List[str],
@@ -155,14 +263,22 @@ def fetch_results(
     # is kept as a safety net.
     status = base_filters.get("status", "")
     upstream_filters = base_filters
-    cache_key = {**upstream_filters, "_groups": group_axis, "_reps": rep_axis}
+    # Per-user cache namespace: two reps querying the same filters can see
+    # different rows because MOST2's results respect their own permissions
+    # and "My tickets" defaults. Keep their caches separate.
+    cache_key = {
+        **upstream_filters,
+        "_groups": group_axis,
+        "_reps": rep_axis,
+        "_user": client.username_bare,
+    }
 
     cached = cache.get(cache_key, config.SEARCH_CACHE_TTL)
     if cached is not None:
         filtered = filter_by_status(cached, status)
         logger.info(
-            "cache hit (%d rows, %d after status=%s)",
-            len(cached), len(filtered), status or "any",
+            "cache hit user=%s (%d rows, %d after status=%s)",
+            client.username_bare, len(cached), len(filtered), status or "any",
         )
         return filtered, ""
 
@@ -176,7 +292,7 @@ def fetch_results(
             per_call["ownership_group"] = group
         if rep:
             per_call["service_rep"] = rep
-        rows = _client.search_tickets(per_call)
+        rows = client.search_tickets(per_call)
         if len(rows) >= 1000:
             truncated_pairs.append((group, rep))
         for row in rows:
@@ -189,8 +305,9 @@ def fetch_results(
     cache.put(cache_key, merged)
     filtered = filter_by_status(merged, status)
     logger.info(
-        "cache miss → %d combos, %d rows (%d after status=%s) groups=%s reps=%s",
-        len(combos), len(merged), len(filtered), status or "any", groups, reps,
+        "cache miss user=%s → %d combos, %d rows (%d after status=%s) groups=%s reps=%s",
+        client.username_bare, len(combos), len(merged), len(filtered),
+        status or "any", groups, reps,
     )
 
     warning = ""
@@ -281,7 +398,9 @@ def filter_by_status(rows: List[Dict[str, Any]], status: str) -> List[Dict[str, 
 
 
 @app.route("/")
+@require_login
 def search():
+    client = _get_client()
     filters, groups, reps = parse_filters(request.args)
     page = max(int(request.args.get("page", 1)), 1)
     per_page = int(request.args.get("per_page", 100))
@@ -304,7 +423,9 @@ def search():
 
     if submitted:
         try:
-            rows, warning = fetch_results(filters, groups, reps)
+            rows, warning = fetch_results(client, filters, groups, reps)
+        except MOST2AuthError:
+            raise  # let the global handler clear the session and redirect
         except MOST2Error as e:
             error = f"MOST2 error: {e}"
             logger.error(error)
@@ -377,14 +498,39 @@ def search():
         sort_col=sort_col,
         sort_dir=sort_dir,
         export_query=urlencode(base_args),
+        current_user=client.username_bare if client else "",
+        current_user_full_name=session.get("full_name", ""),
+        my_tickets_url=_build_my_tickets_url(),
     )
 
 
+def _build_my_tickets_url() -> str:
+    """URL the 'My Tickets' button hits.
+
+    Pre-fills service_reps=<your display name>, status=B (Open+Hold),
+    and submitted=1 so the page runs the search on load. Empty when we
+    don't have a parsed display name (the button is hidden in that case).
+    """
+    name = session.get("full_name", "")
+    if not name:
+        return ""
+    qs = urlencode([
+        ("service_reps", name),
+        ("status", "B"),
+        ("submitted", "1"),
+    ])
+    return url_for("search") + "?" + qs
+
+
 @app.route("/tickets/export.csv")
+@require_login
 def export_csv():
+    client = _get_client()
     filters, groups, reps = parse_filters(request.args)
     try:
-        rows, _ = fetch_results(filters, groups, reps)
+        rows, _ = fetch_results(client, filters, groups, reps)
+    except MOST2AuthError:
+        raise
     except Exception as e:
         logger.exception("CSV export failed")
         return Response(f"Export failed: {e}", status=500)
@@ -395,7 +541,7 @@ def export_csv():
     writer.writerow(columns)
     total = len(rows)
     for i, row in enumerate(rows):
-        comments_text = _fetch_comments_for_export(row.get("TicketNumber"))
+        comments_text = _fetch_comments_for_export(client, row.get("TicketNumber"))
         out = [_csv_value(lookup(row, c)) for c in EXPORT_COLUMNS]
         out.append(comments_text)
         writer.writerow(out)
@@ -403,7 +549,7 @@ def export_csv():
             logger.info("CSV export progress: %d/%d tickets", i + 1, total)
 
     filename = f"tickets-{datetime.now().strftime('%Y%m%d-%H%M%S')}.csv"
-    logger.info("CSV export: %d rows (with comments)", total)
+    logger.info("CSV export user=%s: %d rows (with comments)", client.username_bare, total)
     return Response(
         buf.getvalue(),
         mimetype="text/csv",
@@ -411,7 +557,7 @@ def export_csv():
     )
 
 
-def _fetch_comments_for_export(ticket_number: Any) -> str:
+def _fetch_comments_for_export(client: MOST2Client, ticket_number: Any) -> str:
     """Per-ticket comment fetch for CSV export.
 
     Returns a plain-text transcript, oldest-first. No redaction —
@@ -421,7 +567,9 @@ def _fetch_comments_for_export(ticket_number: Any) -> str:
     if not ticket_number:
         return ""
     try:
-        notes = _client.get_ticket_comments(ticket_number)
+        notes = client.get_ticket_comments(ticket_number)
+    except MOST2AuthError:
+        raise
     except Exception as e:
         logger.warning("comments fetch failed for %s: %s", ticket_number, e)
         return f"[error fetching comments: {e}]"
@@ -447,10 +595,14 @@ def _fetch_comments_for_export(ticket_number: Any) -> str:
 
 
 @app.route("/api/tickets/<ticket_number>/comments")
+@require_login
 def api_ticket_comments(ticket_number):
     """Return the comment/note records for one ticket as JSON."""
+    client = _get_client()
     try:
-        notes = _client.get_ticket_comments(ticket_number)
+        notes = client.get_ticket_comments(ticket_number)
+    except MOST2AuthError:
+        raise
     except MOST2Error as e:
         return jsonify({"error": str(e)}), 502
     except Exception as e:
@@ -460,6 +612,7 @@ def api_ticket_comments(ticket_number):
 
 
 @app.route("/api/tickets/<ticket_number>/summary")
+@require_login
 def api_ticket_summary(ticket_number):
     """Return a Claude-generated summary of the ticket's comment thread.
 
@@ -467,8 +620,11 @@ def api_ticket_summary(ticket_number):
     includes the comment count so adding a new note invalidates the
     summary on next view.
     """
+    client = _get_client()
     try:
-        notes = _client.get_ticket_comments(ticket_number)
+        notes = client.get_ticket_comments(ticket_number)
+    except MOST2AuthError:
+        raise
     except MOST2Error as e:
         return jsonify({"error": f"MOST2 error: {e}"}), 502
     except Exception as e:
@@ -504,6 +660,7 @@ def api_ticket_summary(ticket_number):
 
 
 @app.route("/api/tickets/<ticket_number>/ask", methods=["POST"])
+@require_login
 def api_ticket_ask(ticket_number):
     """Answer a follow-up question about a ticket using its comment thread.
 
@@ -531,8 +688,11 @@ def api_ticket_ask(ticket_number):
         if role in ("user", "assistant") and isinstance(content, str) and content.strip():
             cleaned_history.append({"role": role, "content": content.strip()[:4000]})
 
+    client = _get_client()
     try:
-        notes = _client.get_ticket_comments(ticket_number)
+        notes = client.get_ticket_comments(ticket_number)
+    except MOST2AuthError:
+        raise
     except MOST2Error as e:
         return jsonify({"error": f"MOST2 error: {e}"}), 502
     except Exception as e:
@@ -565,7 +725,95 @@ def _csv_value(v: Any) -> str:
 
 @app.route("/health")
 def health():
-    return {"ok": True, "session": bool(_client.session_id)}
+    """Liveness probe. Public — auth health is checked separately."""
+    return {"ok": True, "logged_in_users": _logged_in_count()}
+
+
+def _logged_in_count() -> int:
+    """Best-effort count of cached MOST2 clients (one per active session).
+
+    Doesn't include sessions whose process restarted before they made a
+    request — those rebuild lazily on next visit.
+    """
+    with _clients_lock:
+        return len(_clients)
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    """Per-user MOST2 login.
+
+    Validates by attempting a real MOST2 login() before storing the
+    credentials in the server-side session. We never write the password
+    to disk in plaintext outside of the flask-session file (which lives
+    under SESSION_FILE_DIR with 0700 perms).
+    """
+    if session.get("most2_username") and session.get("most2_password"):
+        # Already signed in — bounce straight to the dashboard. Lets users
+        # bookmark /login without it looking broken.
+        return redirect(url_for("search"))
+
+    error = None
+    username = ""
+    if request.method == "POST":
+        username = (request.form.get("username") or "").strip()
+        password = request.form.get("password") or ""
+        next_url = (request.form.get("next") or "").strip()
+
+        if not username or not password:
+            error = "Username and password are required."
+        else:
+            try:
+                # Build the client and force a login() so we surface bad
+                # creds *before* storing anything in the session.
+                client = MOST2Client(username, password)
+                client.login()
+            except MOST2AuthError as e:
+                error = str(e)
+            except MOST2Error as e:
+                error = f"Could not reach MOST2: {e}"
+            except Exception as e:
+                logger.exception("login failed for %s", username)
+                error = f"Unexpected error during login: {e}"
+            else:
+                # Success — issue a brand-new session id (cheap defence
+                # against session-fixation) and stash creds + the live client.
+                session.clear()
+                user_id = secrets.token_urlsafe(24)
+                session["user_id"] = user_id
+                session["most2_username"] = username
+                session["most2_password"] = password
+                # Cached so "My Tickets" can pre-fill the service-rep filter
+                # without a fresh GET of /TicketSearch.aspx on every request.
+                session["full_name"] = client.full_name
+                session.permanent = True
+                with _clients_lock:
+                    _clients[user_id] = client
+                logger.info("user logged in: %s", client.username_bare)
+                # Only allow same-origin next paths so we don't open an
+                # open-redirect on /login?next=https://evil/.
+                if next_url and next_url.startswith("/") and not next_url.startswith("//"):
+                    return redirect(next_url)
+                return redirect(url_for("search"))
+
+    # GET, or POST with errors: show the form again.
+    return render_template(
+        "login.html",
+        error=error,
+        username=username,
+        next_url=request.values.get("next", ""),
+    )
+
+
+@app.route("/logout", methods=["GET", "POST"])
+def logout():
+    """Drop the cached MOST2 client and clear the Flask session."""
+    user = session.get("most2_username")
+    _drop_client()
+    session.clear()
+    if user:
+        logger.info("user logged out: %s", user)
+    return redirect(url_for("login"))
 
 
 if __name__ == "__main__":
