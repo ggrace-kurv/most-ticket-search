@@ -1,0 +1,38 @@
+# systemd unit for the MOST2 Ticket Search Flask app.
+#
+# Install:
+#   sudo cp most-ticket-search.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now most-ticket-search
+#
+# Status / logs:
+#   systemctl status most-ticket-search
+#   journalctl -u most-ticket-search -f
+#
+# Edit User=, Group=, and the two paths below if the deploy location differs.
+
+[Unit]
+Description=MOST2 Ticket Search dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ggrace
+Group=ggrace
+WorkingDirectory=/mnt/c/coding-projects/Kurv/most-ticket-search
+EnvironmentFile=/mnt/c/coding-projects/Kurv/most-ticket-search/.env
+# ~/.local/bin holds the `claude` CLI (used by claude_client.py). systemd
+# does not inherit interactive-shell PATH, so we set it explicitly here.
+Environment=PATH=/home/ggrace/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/mnt/c/coding-projects/Kurv/most-ticket-search/.venv/bin/python app.py
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+
+# Single-process by design — see README "Caching" section. Do not add
+# more workers without giving each its own cache.
+
+[Install]
+WantedBy=multi-user.target
