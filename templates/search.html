@@ -136,13 +136,18 @@
         /* Dates section: two pairs that should read as "Opened: From / To"
            and "Closed: From / To". The sub-label sits above the inputs;
            the pair as a whole spans two grid columns so the From / To
-           labels line up without a separator line. */
+           labels line up without a separator line. min(360px, 100%) keeps
+           the track from forcing horizontal scroll on narrow viewports —
+           below ~360px the track collapses to the container width and
+           each pair stacks one-up. */
         .filter-grid-dates {
-            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr));
         }
         .date-pair {
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            /* Inputs side-by-side on roomy screens; collapse to single
+               column at very narrow widths so date pickers don't squeeze. */
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
             gap: 14px 16px;
             position: relative;
             padding-top: 18px;
@@ -721,22 +726,26 @@
         <fieldset class="filter-section">
             <legend>Dates</legend>
             <div class="filter-grid filter-grid-dates">
-                <div class="date-pair">
-                    <span class="date-pair-label">Opened</span>
+                <div class="date-pair" role="group" aria-labelledby="dp-opened">
+                    <span id="dp-opened" class="date-pair-label">Opened</span>
                     <label>From
-                        <input type="date" name="date_from" value="{{ filters.get('date_from', '') }}">
+                        <input type="date" name="date_from" aria-label="Opened from"
+                               value="{{ filters.get('date_from', '') }}">
                     </label>
                     <label>To
-                        <input type="date" name="date_to" value="{{ filters.get('date_to', '') }}">
+                        <input type="date" name="date_to" aria-label="Opened to"
+                               value="{{ filters.get('date_to', '') }}">
                     </label>
                 </div>
-                <div class="date-pair">
-                    <span class="date-pair-label">Closed</span>
+                <div class="date-pair" role="group" aria-labelledby="dp-closed">
+                    <span id="dp-closed" class="date-pair-label">Closed</span>
                     <label>From
-                        <input type="date" name="closed_from" value="{{ filters.get('closed_from', '') }}">
+                        <input type="date" name="closed_from" aria-label="Closed from"
+                               value="{{ filters.get('closed_from', '') }}">
                     </label>
                     <label>To
-                        <input type="date" name="closed_to" value="{{ filters.get('closed_to', '') }}">
+                        <input type="date" name="closed_to" aria-label="Closed to"
+                               value="{{ filters.get('closed_to', '') }}">
                     </label>
                 </div>
             </div>
