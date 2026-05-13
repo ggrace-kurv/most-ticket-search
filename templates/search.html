@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <title>MOST2 Ticket Search</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='main.css') }}">
+    <script src="{{ url_for('static', filename='vendor/purify.min.js') }}"></script>
     <style>
         :root {
             --c-primary: #005300;
@@ -69,6 +70,9 @@
             font-size: 12px; font-weight: 600;
             letter-spacing: 0.02em;
         }
+        .user-chip .logout-form {
+            display: inline-flex; margin: 0; padding: 0;
+        }
         .user-chip .logout-link {
             color: var(--c-primary);
             background: white;
@@ -77,11 +81,18 @@
             padding: 3px 10px;
             border-radius: 999px;
             font-weight: 500;
-            transition: background .12s, border-color .12s;
+            font-size: 12px;
+            font-family: inherit;
+            letter-spacing: 0.02em;
+            cursor: pointer;
+            transition: background .12s, border-color .12s, color .12s;
         }
         .user-chip .logout-link:hover {
             background: var(--c-primary); color: white;
             border-color: var(--c-primary);
+        }
+        .user-chip .logout-link:focus-visible {
+            outline: 2px solid var(--c-primary); outline-offset: 2px;
         }
 
         /* Filter card */
@@ -574,7 +585,9 @@
             {% if current_user %}
                 <span class="user-chip" title="Signed-in MOST2 account">
                     {{ current_user }}
-                    <a href="{{ url_for('logout') }}" class="logout-link">Sign out</a>
+                    <form method="post" action="{{ url_for('logout') }}" class="logout-form">
+                        <button type="submit" class="logout-link">Sign out</button>
+                    </form>
                 </span>
             {% endif %}
         </div>
@@ -1223,10 +1236,30 @@ function renderComments(pane, notes) {
 
         const body = document.createElement('div');
         body.className = 'comment-body';
-        // Comments come back as HTML from MOST2 (their own UI renders it as
-        // HTML). Internal users + internal data → low XSS risk; matches
-        // what MOST2's UI displays.
-        body.innerHTML = n.Comments || '';
+        // MOST2 returns comment bodies as HTML so its own UI can render
+        // them faithfully. We render the same content, but anything that
+        // crosses into the dashboard from outside MOST2's internal users
+        // (email-to-ticket gateways, merchant copy/paste, automation) is
+        // untrusted — sanitize with DOMPurify before assigning innerHTML.
+        // The hardcoded config drops <script>, <iframe>, on* handlers,
+        // javascript: URLs, and SVG nasties while keeping the formatting
+        // MOST2 actually uses (basic block/inline tags + links).
+        body.innerHTML = DOMPurify.sanitize(n.Comments || '', {
+            ALLOWED_TAGS: ['p','br','b','i','u','em','strong','span','div',
+                           'ul','ol','li','a','blockquote','code','pre',
+                           'table','thead','tbody','tr','td','th',
+                           'h1','h2','h3','h4','h5','h6','hr','img'],
+            ALLOWED_ATTR: ['href','title','target','rel','src','alt','width','height','colspan','rowspan','align','style'],
+            ALLOW_DATA_ATTR: false,
+            ADD_ATTR: ['target'],
+            FORBID_TAGS: ['script','iframe','object','embed','base','form','input','button','textarea','select'],
+            FORBID_ATTR: ['onerror','onload','onclick','onmouseover','onfocus','onblur','onchange','onsubmit'],
+        });
+        // Force any links to open in a new tab and stripped of opener.
+        body.querySelectorAll('a[href]').forEach(a => {
+            a.setAttribute('target', '_blank');
+            a.setAttribute('rel', 'noopener noreferrer');
+        });
 
         item.appendChild(meta);
         item.appendChild(body);

@@ -15,12 +15,15 @@ import csv
 import logging
 import os
 import secrets
+import sys
 import threading
+import time
+from collections import OrderedDict
 from datetime import datetime, timedelta
 from functools import wraps
 from io import StringIO
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 from flask import (
     Flask, Response, jsonify, redirect, render_template,
@@ -28,6 +31,7 @@ from flask import (
 )
 from flask_session import Session
 
+import auth_crypto
 import cache
 import config
 from claude_client import ClaudeError, _strip_html, answer_followup, summarize_ticket
@@ -42,14 +46,58 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.secret_key = config.SECRET_KEY
 
-# Server-side sessions via flask-session: the user's MOST2 password is
-# stored in a file under SESSION_FILE_DIR, and only an opaque session id
-# rides on the wire. Lifetime caps how long a stolen cookie is useful.
+# Server-side sessions via flask-session: an opaque session id rides
+# in the cookie; everything else (including the encrypted MOST2
+# password) lives in SESSION_FILE_DIR. Even with at-rest encryption,
+# we want the directory itself to be unreadable by other local users.
 os.makedirs(config.SESSION_FILE_DIR, exist_ok=True)
 try:
     os.chmod(config.SESSION_FILE_DIR, 0o700)
 except OSError:
     pass  # already restricted, or fs doesn't support chmod (eg. /mnt/c)
+
+
+def _enforce_session_dir_perms():
+    """Refuse to start in production if SESSION_FILE_DIR is too open.
+
+    On a POSIX filesystem the chmod above lands us at 0o700. On WSL
+    /mnt/c paths the chmod is a no-op and the directory effectively
+    inherits 0o777. Even with encrypted password fields the dir name
+    listing leaks who logged in and when, and a misconfigured
+    SECRET_KEY-shared deploy could let someone read passwords.
+
+    Strict by default in non-debug mode. Set SESSION_PERMS_STRICT=false
+    to override (eg. for the existing /mnt/c WSL deployment) — at-rest
+    encryption is doing most of the work anyway.
+    """
+    try:
+        mode = os.stat(config.SESSION_FILE_DIR).st_mode & 0o777
+    except OSError:
+        return
+    if not (mode & 0o077):
+        return
+    msg = (
+        f"SESSION_FILE_DIR {config.SESSION_FILE_DIR} has mode {oct(mode)} — "
+        f"group/other bits are set. Passwords are encrypted at rest, but the "
+        f"directory should still be 0700 to avoid leaking session metadata."
+    )
+    if config.FLASK_DEBUG:
+        logger.warning("%s (OK for debug)", msg)
+        return
+    strict = os.getenv("SESSION_PERMS_STRICT", "true").lower() != "false"
+    if not strict:
+        logger.error("%s — SESSION_PERMS_STRICT=false, continuing anyway", msg)
+        return
+    print(
+        f"FATAL: {msg} Move to a POSIX-compliant filesystem "
+        f"(eg. /var/lib/most-ticket-search/sessions) or set "
+        f"SESSION_PERMS_STRICT=false in .env to override.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+_enforce_session_dir_perms()
 app.config["SESSION_TYPE"] = "filesystem"
 app.config["SESSION_FILE_DIR"] = config.SESSION_FILE_DIR
 app.config["SESSION_PERMANENT"] = True
@@ -61,13 +109,129 @@ app.config["SESSION_USE_SIGNER"] = True
 Session(app)
 
 
+# Defence-in-depth headers applied to every response. CSP is the
+# load-bearing one: it constrains where scripts / styles / images can
+# load from so a successful HTML injection (eg. a comment that slips
+# past DOMPurify) can't reach an attacker-controlled script. We allow
+# inline scripts and styles because the dashboard template has many
+# onclick= handlers and a large inline <style> block; tightening that
+# to nonces is a future hardening pass tracked in the audit notes.
+_BASE_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "font-src 'self' data:; "
+    "connect-src 'self'; "
+    "object-src 'none'; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
+    "frame-ancestors 'none';"
+)
+
+
+@app.after_request
+def _set_security_headers(response):
+    response.headers.setdefault("Content-Security-Policy", _BASE_CSP)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    # Belt-and-suspenders for frame-ancestors above; older browsers and
+    # some scanners still look at X-Frame-Options.
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    return response
+
+
 # Per-user MOST2 clients. Building a MOST2Client costs nothing, but
 # reusing the underlying requests.Session lets us reuse the NTLM handshake
 # and the (S(...)) session id across calls — which matters when a user
 # clicks through 5+ pages in a minute. Keyed by a per-login UUID stored
 # in session["user_id"]; cleared on logout and on auth failure.
-_clients: Dict[str, MOST2Client] = {}
+#
+# Bounded LRU: without this, users who close their tab without signing
+# out would leak a MOST2Client (and its in-memory password) into the
+# dict forever, until process restart. We sweep two ways: by idle TTL
+# matching the cookie lifetime, and by hard count if traffic spikes.
+_CLIENTS_MAX = int(os.getenv("MAX_CACHED_CLIENTS", "500"))
+_CLIENTS_TTL_SECONDS = config.SESSION_LIFETIME_SECONDS
+_clients: "OrderedDict[str, Tuple[MOST2Client, float]]" = OrderedDict()
 _clients_lock = threading.Lock()
+
+
+def _is_safe_next_url(next_url: str) -> bool:
+    """Decide whether a ?next=… value is safe to redirect to after login.
+
+    The previous check was `startswith("/") and not startswith("//")`.
+    That rejects scheme-relative URLs but misses backslash variants
+    that some browsers normalize (eg. `/\\evil.com/path`) and control
+    characters used in header smuggling. urlparse drops both.
+    """
+    if not next_url:
+        return False
+    if any(c in next_url for c in ("\\", "\r", "\n", "\t")):
+        return False
+    parsed = urlparse(next_url)
+    if parsed.scheme or parsed.netloc:
+        return False
+    return next_url.startswith("/") and not next_url.startswith("//")
+
+
+def _check_same_origin() -> Optional[Tuple[Any, int]]:
+    """Reject state-changing requests whose Origin doesn't match host.
+
+    SameSite=Lax already blocks most cross-site POSTs, but a
+    misconfigured reverse proxy or a future relaxation could let one
+    through; the Origin check is the textbook CSRF defence and is
+    essentially free. Same-origin requests from older clients that
+    omit Origin are allowed — they're indistinguishable from server-
+    generated requests.
+    """
+    origin = request.headers.get("Origin", "")
+    if not origin:
+        return None
+    expected = urlparse(request.host_url).netloc.lower()
+    actual = urlparse(origin).netloc.lower()
+    if actual != expected:
+        logger.warning(
+            "Rejected cross-origin %s %s: Origin=%s expected=%s",
+            request.method, request.path, origin, expected,
+        )
+        return jsonify({"error": "Origin mismatch."}), 403
+    return None
+
+
+def _log_internal_error(prefix: str, exc: Exception) -> str:
+    """Log a full traceback with a fresh correlation id and return a
+    user-safe message that only references the id.
+
+    Use this anywhere we'd otherwise dump str(e) into a response body —
+    a Python exception's str form can include path fragments, internal
+    function names, and library internals that are recon material for
+    an attacker. The correlation id makes it easy to find the real
+    detail in the server logs without exposing it on the wire.
+    """
+    cid = secrets.token_hex(8)
+    logger.exception("[%s] %s: %s", cid, prefix, exc)
+    return f"{prefix} (ref {cid}). Server logs have details."
+
+
+def _sweep_stale_clients_locked(now: float) -> None:
+    """Evict clients whose last_used is older than _CLIENTS_TTL_SECONDS.
+
+    Caller must hold _clients_lock. The OrderedDict is maintained in
+    LRU order (front = oldest), so peeking the head and popping until
+    we hit a fresh entry is enough — no full scan needed.
+    """
+    while _clients:
+        oldest_uid = next(iter(_clients))
+        _, last_used = _clients[oldest_uid]
+        if now - last_used > _CLIENTS_TTL_SECONDS:
+            _clients.popitem(last=False)
+            logger.info(
+                "evicted idle client user_id=%s (idle > %ds)",
+                oldest_uid, _CLIENTS_TTL_SECONDS,
+            )
+        else:
+            break
 
 
 def _get_client() -> Optional[MOST2Client]:
@@ -79,15 +243,40 @@ def _get_client() -> Optional[MOST2Client]:
     """
     user_id = session.get("user_id")
     username = session.get("most2_username")
-    password = session.get("most2_password")
-    if not (user_id and username and password):
+    enc_password = session.get("most2_password_enc")
+    if not (user_id and username and enc_password):
         return None
+    try:
+        password = auth_crypto.decrypt_password(enc_password)
+    except auth_crypto.InvalidToken:
+        # Session ciphertext can't be decrypted with the current SECRET_KEY
+        # — usually means SECRET_KEY was rotated, or the session file was
+        # tampered. Either way, treat as "needs to log in again".
+        logger.warning(
+            "Stored password failed to decrypt for user_id=%s — forcing re-login",
+            user_id,
+        )
+        return None
+
+    now = time.time()
     with _clients_lock:
-        client = _clients.get(user_id)
-        if client is not None:
+        _sweep_stale_clients_locked(now)
+        if user_id in _clients:
+            client, _ = _clients[user_id]
+            # Refresh recency: move to the back (most-recent end) of the
+            # LRU and bump last_used so _sweep_stale_clients_locked treats
+            # this user as active.
+            _clients.move_to_end(user_id)
+            _clients[user_id] = (client, now)
             return client
         client = MOST2Client(username, password)
-        _clients[user_id] = client
+        if len(_clients) >= _CLIENTS_MAX:
+            evicted_uid, _ = _clients.popitem(last=False)
+            logger.warning(
+                "client cache at cap (%d) — evicted LRU user_id=%s",
+                _CLIENTS_MAX, evicted_uid,
+            )
+        _clients[user_id] = (client, now)
         return client
 
 
@@ -112,7 +301,7 @@ def require_login(view):
     """
     @wraps(view)
     def wrapper(*args, **kwargs):
-        if not session.get("most2_username") or not session.get("most2_password"):
+        if not session.get("most2_username") or not session.get("most2_password_enc"):
             if request.path.startswith("/api/"):
                 return jsonify({"error": "Not authenticated."}), 401
             # Preserve the originally-requested URL (path + query) so the
@@ -427,11 +616,11 @@ def search():
         except MOST2AuthError:
             raise  # let the global handler clear the session and redirect
         except MOST2Error as e:
+            # MOST2Error.__str__ is already sanitized (correlation id only)
             error = f"MOST2 error: {e}"
             logger.error(error)
         except Exception as e:
-            error = f"Search failed: {e}"
-            logger.exception(error)
+            error = _log_internal_error("Search failed", e)
 
     rows = sort_rows(rows, sort_col, sort_dir)
 
@@ -532,8 +721,7 @@ def export_csv():
     except MOST2AuthError:
         raise
     except Exception as e:
-        logger.exception("CSV export failed")
-        return Response(f"Export failed: {e}", status=500)
+        return Response(_log_internal_error("CSV export failed", e), status=500)
 
     columns = EXPORT_COLUMNS + ["comments"]
     buf = StringIO()
@@ -606,8 +794,9 @@ def api_ticket_comments(ticket_number):
     except MOST2Error as e:
         return jsonify({"error": str(e)}), 502
     except Exception as e:
-        logger.exception("comments fetch failed for %s", ticket_number)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "error": _log_internal_error(f"Comments fetch failed for ticket {ticket_number}", e),
+        }), 500
     return jsonify({"ticket_number": ticket_number, "notes": notes})
 
 
@@ -628,8 +817,9 @@ def api_ticket_summary(ticket_number):
     except MOST2Error as e:
         return jsonify({"error": f"MOST2 error: {e}"}), 502
     except Exception as e:
-        logger.exception("comments fetch failed for %s", ticket_number)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "error": _log_internal_error(f"Comments fetch failed for ticket {ticket_number}", e),
+        }), 500
 
     cache_key = {"_type": "summary", "ticket": str(ticket_number), "n": len(notes)}
     cached = cache.get(cache_key, config.SUMMARY_CACHE_TTL)
@@ -647,8 +837,9 @@ def api_ticket_summary(ticket_number):
         logger.error("Claude summary failed for %s: %s", ticket_number, e)
         return jsonify({"error": str(e)}), 502
     except Exception as e:
-        logger.exception("summary failed for %s", ticket_number)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "error": _log_internal_error(f"Summary failed for ticket {ticket_number}", e),
+        }), 500
 
     cache.put(cache_key, [{"summary": summary}])
     return jsonify({
@@ -668,6 +859,13 @@ def api_ticket_ask(ticket_number):
     we re-fetch the comments and re-prompt Claude. Comments are pulled
     fresh each call so newly-added notes are reflected immediately.
     """
+    # Only state-changing endpoint in the app — defence-in-depth Origin
+    # check on top of SameSite=Lax cookies. (Comments / Summary are GETs
+    # and don't need it.)
+    origin_block = _check_same_origin()
+    if origin_block is not None:
+        return origin_block
+
     payload = request.get_json(silent=True) or {}
     question = (payload.get("question") or "").strip()
     summary = (payload.get("summary") or "").strip()
@@ -696,8 +894,9 @@ def api_ticket_ask(ticket_number):
     except MOST2Error as e:
         return jsonify({"error": f"MOST2 error: {e}"}), 502
     except Exception as e:
-        logger.exception("comments fetch failed for %s", ticket_number)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "error": _log_internal_error(f"Comments fetch failed for ticket {ticket_number}", e),
+        }), 500
 
     try:
         answer = answer_followup(ticket_number, notes, summary, cleaned_history, question)
@@ -705,8 +904,9 @@ def api_ticket_ask(ticket_number):
         logger.error("Claude follow-up failed for %s: %s", ticket_number, e)
         return jsonify({"error": str(e)}), 502
     except Exception as e:
-        logger.exception("follow-up failed for %s", ticket_number)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "error": _log_internal_error(f"Follow-up failed for ticket {ticket_number}", e),
+        }), 500
 
     return jsonify({
         "ticket_number": ticket_number,
@@ -725,18 +925,11 @@ def _csv_value(v: Any) -> str:
 
 @app.route("/health")
 def health():
-    """Liveness probe. Public — auth health is checked separately."""
-    return {"ok": True, "logged_in_users": _logged_in_count()}
-
-
-def _logged_in_count() -> int:
-    """Best-effort count of cached MOST2 clients (one per active session).
-
-    Doesn't include sessions whose process restarted before they made a
-    request — those rebuild lazily on next visit.
-    """
-    with _clients_lock:
-        return len(_clients)
+    """Liveness probe. Public — intentionally tells external callers
+    nothing beyond "the process is up". Earlier versions returned the
+    count of cached clients, which gave an unauthenticated attacker
+    timing data about active sessions; removed."""
+    return {"ok": True}
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -748,7 +941,7 @@ def login():
     to disk in plaintext outside of the flask-session file (which lives
     under SESSION_FILE_DIR with 0700 perms).
     """
-    if session.get("most2_username") and session.get("most2_password"):
+    if session.get("most2_username") and session.get("most2_password_enc"):
         # Already signed in — bounce straight to the dashboard. Lets users
         # bookmark /login without it looking broken.
         return redirect(url_for("search"))
@@ -780,19 +973,34 @@ def login():
                 # against session-fixation) and stash creds + the live client.
                 session.clear()
                 user_id = secrets.token_urlsafe(24)
+                session.permanent = True
                 session["user_id"] = user_id
                 session["most2_username"] = username
-                session["most2_password"] = password
+                # Encrypted at rest in the flask-session file so a
+                # disk-only attacker can't read it without also having
+                # SECRET_KEY. See auth_crypto for the threat model.
+                # NTLM still requires the live password in memory while
+                # the user is active (held in MOST2Client + HttpNtlmAuth)
+                # — that's residual exposure we can't eliminate without
+                # changing protocols upstream.
+                session["most2_password_enc"] = auth_crypto.encrypt_password(password)
                 # Cached so "My Tickets" can pre-fill the service-rep filter
                 # without a fresh GET of /TicketSearch.aspx on every request.
                 session["full_name"] = client.full_name
-                session.permanent = True
                 with _clients_lock:
-                    _clients[user_id] = client
+                    if len(_clients) >= _CLIENTS_MAX:
+                        evicted_uid, _ = _clients.popitem(last=False)
+                        logger.warning(
+                            "client cache at cap (%d) — evicted LRU user_id=%s on login",
+                            _CLIENTS_MAX, evicted_uid,
+                        )
+                    _clients[user_id] = (client, time.time())
                 logger.info("user logged in: %s", client.username_bare)
-                # Only allow same-origin next paths so we don't open an
-                # open-redirect on /login?next=https://evil/.
-                if next_url and next_url.startswith("/") and not next_url.startswith("//"):
+                # Only allow same-origin relative paths — _is_safe_next_url
+                # rejects schemes, netlocs, and backslash/control-char
+                # tricks that some browsers normalize past simple startswith
+                # checks.
+                if _is_safe_next_url(next_url):
                     return redirect(next_url)
                 return redirect(url_for("search"))
 
@@ -805,9 +1013,15 @@ def login():
     )
 
 
-@app.route("/logout", methods=["GET", "POST"])
+@app.route("/logout", methods=["POST"])
 def logout():
-    """Drop the cached MOST2 client and clear the Flask session."""
+    """Drop the cached MOST2 client and clear the Flask session.
+
+    POST-only because a GET logout is a CSRF vector: an attacker who
+    can lure a logged-in rep to visit a page they control could include
+    `<img src="/logout">` and forcibly sign them out. SameSite=Lax
+    blocks cross-site POSTs, so requiring POST closes that hole.
+    """
     user = session.get("most2_username")
     _drop_client()
     session.clear()
