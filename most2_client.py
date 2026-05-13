@@ -9,6 +9,7 @@ import html as _html
 import json
 import logging
 import re
+import secrets
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -135,17 +136,20 @@ class MOST2Client:
         if not resp.ok:
             # ASP.NET ASMX returns the actual reason in the body (often JSON
             # with a "Message" / "ExceptionType" / "StackTrace" field, or a
-            # plain HTML error page). Surface it so we can diagnose payload
-            # mismatches without needing a HAR capture.
+            # plain HTML error page). We need that for diagnosis — but we
+            # don't want to forward stack traces / internal paths to the
+            # end user. Log the body server-side with a correlation id and
+            # raise a sanitized error that only carries the id.
             body = resp.text or ""
             snippet = body[:1500]
+            cid = secrets.token_hex(8)
             logger.error(
-                "MOST2 %s -> HTTP %d\n  payload sent: %s\n  response body: %s",
-                path, resp.status_code, json.dumps(payload), snippet,
+                "[%s] MOST2 %s -> HTTP %d\n  payload sent: %s\n  response body: %s",
+                cid, path, resp.status_code, json.dumps(payload), snippet,
             )
             raise MOST2Error(
-                f"HTTP {resp.status_code} from {path}. "
-                f"Body (first 1500 chars): {snippet}"
+                f"MOST2 returned an error (ref {cid}). "
+                f"Server logs have details."
             )
 
         data = resp.json()

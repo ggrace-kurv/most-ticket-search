@@ -112,6 +112,21 @@ _clients: "OrderedDict[str, Tuple[MOST2Client, float]]" = OrderedDict()
 _clients_lock = threading.Lock()
 
 
+def _log_internal_error(prefix: str, exc: Exception) -> str:
+    """Log a full traceback with a fresh correlation id and return a
+    user-safe message that only references the id.
+
+    Use this anywhere we'd otherwise dump str(e) into a response body —
+    a Python exception's str form can include path fragments, internal
+    function names, and library internals that are recon material for
+    an attacker. The correlation id makes it easy to find the real
+    detail in the server logs without exposing it on the wire.
+    """
+    cid = secrets.token_hex(8)
+    logger.exception("[%s] %s: %s", cid, prefix, exc)
+    return f"{prefix} (ref {cid}). Server logs have details."
+
+
 def _sweep_stale_clients_locked(now: float) -> None:
     """Evict clients whose last_used is older than _CLIENTS_TTL_SECONDS.
 
@@ -514,11 +529,11 @@ def search():
         except MOST2AuthError:
             raise  # let the global handler clear the session and redirect
         except MOST2Error as e:
+            # MOST2Error.__str__ is already sanitized (correlation id only)
             error = f"MOST2 error: {e}"
             logger.error(error)
         except Exception as e:
-            error = f"Search failed: {e}"
-            logger.exception(error)
+            error = _log_internal_error("Search failed", e)
 
     rows = sort_rows(rows, sort_col, sort_dir)
 
@@ -619,8 +634,7 @@ def export_csv():
     except MOST2AuthError:
         raise
     except Exception as e:
-        logger.exception("CSV export failed")
-        return Response(f"Export failed: {e}", status=500)
+        return Response(_log_internal_error("CSV export failed", e), status=500)
 
     columns = EXPORT_COLUMNS + ["comments"]
     buf = StringIO()
@@ -693,8 +707,9 @@ def api_ticket_comments(ticket_number):
     except MOST2Error as e:
         return jsonify({"error": str(e)}), 502
     except Exception as e:
-        logger.exception("comments fetch failed for %s", ticket_number)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "error": _log_internal_error(f"Comments fetch failed for ticket {ticket_number}", e),
+        }), 500
     return jsonify({"ticket_number": ticket_number, "notes": notes})
 
 
@@ -715,8 +730,9 @@ def api_ticket_summary(ticket_number):
     except MOST2Error as e:
         return jsonify({"error": f"MOST2 error: {e}"}), 502
     except Exception as e:
-        logger.exception("comments fetch failed for %s", ticket_number)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "error": _log_internal_error(f"Comments fetch failed for ticket {ticket_number}", e),
+        }), 500
 
     cache_key = {"_type": "summary", "ticket": str(ticket_number), "n": len(notes)}
     cached = cache.get(cache_key, config.SUMMARY_CACHE_TTL)
@@ -734,8 +750,9 @@ def api_ticket_summary(ticket_number):
         logger.error("Claude summary failed for %s: %s", ticket_number, e)
         return jsonify({"error": str(e)}), 502
     except Exception as e:
-        logger.exception("summary failed for %s", ticket_number)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "error": _log_internal_error(f"Summary failed for ticket {ticket_number}", e),
+        }), 500
 
     cache.put(cache_key, [{"summary": summary}])
     return jsonify({
@@ -783,8 +800,9 @@ def api_ticket_ask(ticket_number):
     except MOST2Error as e:
         return jsonify({"error": f"MOST2 error: {e}"}), 502
     except Exception as e:
-        logger.exception("comments fetch failed for %s", ticket_number)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "error": _log_internal_error(f"Comments fetch failed for ticket {ticket_number}", e),
+        }), 500
 
     try:
         answer = answer_followup(ticket_number, notes, summary, cleaned_history, question)
@@ -792,8 +810,9 @@ def api_ticket_ask(ticket_number):
         logger.error("Claude follow-up failed for %s: %s", ticket_number, e)
         return jsonify({"error": str(e)}), 502
     except Exception as e:
-        logger.exception("follow-up failed for %s", ticket_number)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "error": _log_internal_error(f"Follow-up failed for ticket {ticket_number}", e),
+        }), 500
 
     return jsonify({
         "ticket_number": ticket_number,
