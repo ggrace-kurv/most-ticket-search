@@ -10,29 +10,16 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-
-def _read_username():
-    """Read USERNAME from .env preserving the literal backslash in domain\\user.
-
-    Optional now that per-user login is the primary auth path. Kept so
-    health-check / smoke-test scripts that set USERNAME in .env continue
-    to work without a login form.
-    """
-    try:
-        with open(".env", "r") as f:
-            for line in f:
-                if line.startswith("USERNAME="):
-                    return line.split("=", 1)[1].strip()
-    except FileNotFoundError:
-        pass
-    return os.getenv("USERNAME", "")
-
-
-# Optional fallback creds. Left in place so /health and CI scripts can
-# warm up without an interactive login, but unused for serving any
-# logged-in user — each user authenticates with their own MOST2 account.
-USERNAME = _read_username()
-PASSWORD = os.getenv("PASSWORD", "")
+# NOTE: there is intentionally no shared service-account fallback here.
+# A previous version of this file read USERNAME / PASSWORD from .env so
+# the app could fall back to a single set of credentials when no user
+# was logged in. That violated the "no plaintext passwords at rest"
+# policy: anyone with read access to .env got everyone's data. Every
+# MOST2 call is now strictly per-user, gated by the /login flow, and
+# the password lives only in the (encrypted) flask-session file.
+#
+# If you find yourself wanting to put a password back into .env to make
+# something easier, build a service-token mechanism upstream instead.
 
 EMS_BASE_URL = os.getenv("EMS_BASE_URL", "https://most2.emscorporate.com").rstrip("/")
 EMS_SEARCH_PATH = os.getenv("EMS_SEARCH_PATH", "/WebService.asmx/ticket_search_load_grid")

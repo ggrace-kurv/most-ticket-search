@@ -28,6 +28,7 @@ from flask import (
 )
 from flask_session import Session
 
+import auth_crypto
 import cache
 import config
 from claude_client import ClaudeError, _strip_html, answer_followup, summarize_ticket
@@ -79,8 +80,19 @@ def _get_client() -> Optional[MOST2Client]:
     """
     user_id = session.get("user_id")
     username = session.get("most2_username")
-    password = session.get("most2_password")
-    if not (user_id and username and password):
+    enc_password = session.get("most2_password_enc")
+    if not (user_id and username and enc_password):
+        return None
+    try:
+        password = auth_crypto.decrypt_password(enc_password)
+    except auth_crypto.InvalidToken:
+        # Session ciphertext can't be decrypted with the current SECRET_KEY
+        # — usually means SECRET_KEY was rotated, or the session file was
+        # tampered. Either way, treat as "needs to log in again".
+        logger.warning(
+            "Stored password failed to decrypt for user_id=%s — forcing re-login",
+            user_id,
+        )
         return None
     with _clients_lock:
         client = _clients.get(user_id)
@@ -112,7 +124,7 @@ def require_login(view):
     """
     @wraps(view)
     def wrapper(*args, **kwargs):
-        if not session.get("most2_username") or not session.get("most2_password"):
+        if not session.get("most2_username") or not session.get("most2_password_enc"):
             if request.path.startswith("/api/"):
                 return jsonify({"error": "Not authenticated."}), 401
             # Preserve the originally-requested URL (path + query) so the
@@ -748,7 +760,7 @@ def login():
     to disk in plaintext outside of the flask-session file (which lives
     under SESSION_FILE_DIR with 0700 perms).
     """
-    if session.get("most2_username") and session.get("most2_password"):
+    if session.get("most2_username") and session.get("most2_password_enc"):
         # Already signed in — bounce straight to the dashboard. Lets users
         # bookmark /login without it looking broken.
         return redirect(url_for("search"))
@@ -780,13 +792,20 @@ def login():
                 # against session-fixation) and stash creds + the live client.
                 session.clear()
                 user_id = secrets.token_urlsafe(24)
+                session.permanent = True
                 session["user_id"] = user_id
                 session["most2_username"] = username
-                session["most2_password"] = password
+                # Encrypted at rest in the flask-session file so a
+                # disk-only attacker can't read it without also having
+                # SECRET_KEY. See auth_crypto for the threat model.
+                # NTLM still requires the live password in memory while
+                # the user is active (held in MOST2Client + HttpNtlmAuth)
+                # — that's residual exposure we can't eliminate without
+                # changing protocols upstream.
+                session["most2_password_enc"] = auth_crypto.encrypt_password(password)
                 # Cached so "My Tickets" can pre-fill the service-rep filter
                 # without a fresh GET of /TicketSearch.aspx on every request.
                 session["full_name"] = client.full_name
-                session.permanent = True
                 with _clients_lock:
                     _clients[user_id] = client
                 logger.info("user logged in: %s", client.username_bare)
