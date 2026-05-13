@@ -305,5 +305,18 @@ SESSION_FILE_DIR = os.getenv("SESSION_FILE_DIR", "/tmp/most-ticket-search-sessio
 # Auto-logout after this many seconds of inactivity. Default 8h covers a
 # work day without forcing a re-login mid-task.
 SESSION_LIFETIME_SECONDS = int(os.getenv("SESSION_LIFETIME_SECONDS", str(60 * 60 * 8)))
-# Set to "false" only for local HTTP development. Production must be HTTPS.
-SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "true").lower() != "false"
+# The Secure attribute tells browsers to send the session cookie only
+# over HTTPS. Forcing it on in dev would silently break the loopback
+# flow — the post-login cookie would never come back, looping the user
+# on /login. So the default tracks FLASK_DEBUG:
+#   FLASK_DEBUG=True  → Secure off (local HTTP works out of the box)
+#   FLASK_DEBUG=False → Secure on  (production HTTPS assumed)
+# Set SESSION_COOKIE_SECURE in .env to override either way.
+def _resolve_cookie_secure() -> bool:
+    explicit = os.getenv("SESSION_COOKIE_SECURE")
+    if explicit is not None and explicit != "":
+        return explicit.lower() not in ("false", "0", "no")
+    return not FLASK_DEBUG
+
+
+SESSION_COOKIE_SECURE = _resolve_cookie_secure()
