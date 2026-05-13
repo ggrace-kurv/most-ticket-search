@@ -689,26 +689,7 @@ def search():
         export_query=urlencode(base_args),
         current_user=client.username_bare if client else "",
         current_user_full_name=session.get("full_name", ""),
-        my_tickets_url=_build_my_tickets_url(),
     )
-
-
-def _build_my_tickets_url() -> str:
-    """URL the 'My Tickets' button hits.
-
-    Pre-fills service_reps=<your display name>, status=B (Open+Hold),
-    and submitted=1 so the page runs the search on load. Empty when we
-    don't have a parsed display name (the button is hidden in that case).
-    """
-    name = session.get("full_name", "")
-    if not name:
-        return ""
-    qs = urlencode([
-        ("service_reps", name),
-        ("status", "B"),
-        ("submitted", "1"),
-    ])
-    return url_for("search") + "?" + qs
 
 
 @app.route("/tickets/export.csv")

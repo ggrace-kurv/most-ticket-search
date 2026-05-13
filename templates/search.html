@@ -3,7 +3,6 @@
 <head>
     <meta charset="UTF-8">
     <title>MOST2 Ticket Search</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='main.css') }}">
     <script src="{{ url_for('static', filename='vendor/purify.min.js') }}"></script>
     <style>
         :root {
@@ -18,10 +17,16 @@
             --c-border-strong: #cdcdc6;
             --c-text: #1f2421;
             --c-text-muted: #6b6f6c;
-            --c-text-faint: #93968f;
+            /* --c-text-faint darkened from #93968f (2.7:1 on white, fails
+               WCAG AA) to #6e716a (~5.0:1 on white). Used for modal close,
+               summary meta, chat hint — all of which carry meaning. */
+            --c-text-faint: #6e716a;
             --c-success: #1f8a3a;
             --c-success-bg: #e6f4ea;
-            --c-warning: #b97800;
+            /* --c-warning darkened from #b97800 (3.5:1 on warning-bg at 11px,
+               fails WCAG AA for small text) to #7a5100 (~7.4:1 on warning-bg).
+               Hold-status pill is read constantly; small-text rules apply. */
+            --c-warning: #7a5100;
             --c-warning-bg: #fff4dc;
             --c-danger: #b3261e;
             --c-danger-bg: #fdecea;
@@ -128,6 +133,31 @@
         .filter-grid-assignment .multiselect-block {
             grid-column: auto;
         }
+        /* Dates section: two pairs that should read as "Opened: From / To"
+           and "Closed: From / To". The sub-label sits above the inputs;
+           the pair as a whole spans two grid columns so the From / To
+           labels line up without a separator line. min(360px, 100%) keeps
+           the track from forcing horizontal scroll on narrow viewports —
+           below ~360px the track collapses to the container width and
+           each pair stacks one-up. */
+        .filter-grid-dates {
+            grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr));
+        }
+        .date-pair {
+            display: grid;
+            /* Inputs side-by-side on roomy screens; collapse to single
+               column at very narrow widths so date pickers don't squeeze. */
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 14px 16px;
+            position: relative;
+            padding-top: 18px;
+        }
+        .date-pair-label {
+            position: absolute; top: 0; left: 0;
+            font-size: 11px; font-weight: 700;
+            letter-spacing: 0.04em;
+            color: var(--c-text-muted);
+        }
         .filter-grid label {
             display: flex; flex-direction: column;
             font-size: 11px; font-weight: 600; text-transform: uppercase;
@@ -144,7 +174,13 @@
         .filter-grid input:focus, .filter-grid select:focus {
             outline: none;
             border-color: var(--c-primary);
-            box-shadow: 0 0 0 3px rgba(0, 83, 0, 0.15);
+            box-shadow: 0 0 0 3px rgba(0, 83, 0, 0.4);
+        }
+        .field-hint {
+            font-size: 11px; font-weight: 400;
+            text-transform: none; letter-spacing: 0;
+            color: var(--c-text-muted);
+            margin-top: 4px;
         }
         .actions {
             display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
@@ -172,7 +208,10 @@
         .btn-primary:hover { background: var(--c-primary-hover); }
         .btn-secondary { background: white; color: var(--c-text); border-color: var(--c-border-strong); }
         .btn-secondary:hover { background: #f8f8f4; }
-        .btn-export { background: var(--c-orange); color: white; box-shadow: var(--shadow-sm); }
+        /* Brand orange (#ef9000) doesn't reach 4.5:1 with white text. Keeping
+           the brand color but switching to dark text yields ~9:1 contrast,
+           which is the more readable pairing anyway. */
+        .btn-export { background: var(--c-orange); color: var(--c-text); box-shadow: var(--shadow-sm); }
         .btn-export:hover { background: var(--c-orange-hover); }
         .btn[disabled], .btn.disabled { opacity: 0.45; pointer-events: none; box-shadow: none; }
 
@@ -261,6 +300,11 @@
         tr.ticket-row { cursor: pointer; transition: background .12s; }
         tr.ticket-row:hover td { background: var(--c-primary-soft) !important; }
         tr.ticket-row.expanded td { background: var(--c-primary-soft) !important; font-weight: 500; }
+        /* Keyboard focus indicator. Inset shadow draws inside the row so it
+           doesn't get clipped by the table's overflow:hidden. */
+        tr.ticket-row:focus-visible { outline: none; }
+        tr.ticket-row:focus-visible td:first-child { box-shadow: inset 3px 0 0 var(--c-primary); }
+        tr.ticket-row:focus-visible td { background: var(--c-primary-soft) !important; }
         tr.comments-row td { padding: 0; background: #fafaf6; }
 
         /* Status pills */
@@ -306,6 +350,14 @@
         .comments-loading {
             color: var(--c-text-muted); font-style: italic; padding: 12px;
             display: inline-flex; align-items: center; gap: 8px;
+        }
+        /* Settled empty state — distinct from .comments-loading so a rep
+           isn't left wondering if it's still loading. Plain (not italic)
+           and includes its own subdued background. */
+        .comments-empty {
+            color: var(--c-text-muted); padding: 12px 16px;
+            background: #fafaf6; border-radius: var(--radius-sm);
+            display: inline-block;
         }
         .comments-error {
             color: var(--c-danger); padding: 12px;
@@ -399,7 +451,7 @@
         }
         .combo.is-focused {
             border-color: var(--c-primary);
-            box-shadow: 0 0 0 3px rgba(0, 83, 0, 0.15);
+            box-shadow: 0 0 0 3px rgba(0, 83, 0, 0.4);
         }
         .combo .combo-input {
             flex: 1; min-width: 0;
@@ -501,7 +553,7 @@
         }
         .reps-filter:focus {
             outline: none; border-color: var(--c-primary);
-            box-shadow: 0 0 0 3px rgba(0, 83, 0, 0.15);
+            box-shadow: 0 0 0 3px rgba(0, 83, 0, 0.4);
         }
 
         /* Summary modal: chat thread ---------------------------------- */
@@ -558,7 +610,7 @@
         }
         .chat-input-row textarea:focus {
             outline: none; border-color: var(--c-primary);
-            box-shadow: 0 0 0 3px rgba(0, 83, 0, 0.15);
+            box-shadow: 0 0 0 3px rgba(0, 83, 0, 0.4);
         }
         .chat-input-row .send-btn {
             padding: 8px 14px;
@@ -666,25 +718,36 @@
                             {% endfor %}
                         </ul>
                     </div>
+                    <span class="field-hint">Type to pick from the list or enter any value and press Enter.</span>
                 </label>
             </div>
         </fieldset>
 
         <fieldset class="filter-section">
             <legend>Dates</legend>
-            <div class="filter-grid">
-                <label>Opened From
-                    <input type="date" name="date_from" value="{{ filters.get('date_from', '') }}">
-                </label>
-                <label>Opened To
-                    <input type="date" name="date_to" value="{{ filters.get('date_to', '') }}">
-                </label>
-                <label>Closed From
-                    <input type="date" name="closed_from" value="{{ filters.get('closed_from', '') }}">
-                </label>
-                <label>Closed To
-                    <input type="date" name="closed_to" value="{{ filters.get('closed_to', '') }}">
-                </label>
+            <div class="filter-grid filter-grid-dates">
+                <div class="date-pair" role="group" aria-labelledby="dp-opened">
+                    <span id="dp-opened" class="date-pair-label">Opened</span>
+                    <label>From
+                        <input type="date" name="date_from" aria-label="Opened from"
+                               value="{{ filters.get('date_from', '') }}">
+                    </label>
+                    <label>To
+                        <input type="date" name="date_to" aria-label="Opened to"
+                               value="{{ filters.get('date_to', '') }}">
+                    </label>
+                </div>
+                <div class="date-pair" role="group" aria-labelledby="dp-closed">
+                    <span id="dp-closed" class="date-pair-label">Closed</span>
+                    <label>From
+                        <input type="date" name="closed_from" aria-label="Closed from"
+                               value="{{ filters.get('closed_from', '') }}">
+                    </label>
+                    <label>To
+                        <input type="date" name="closed_to" aria-label="Closed to"
+                               value="{{ filters.get('closed_to', '') }}">
+                    </label>
+                </div>
             </div>
         </fieldset>
 
@@ -733,9 +796,11 @@
         <div class="actions">
             <button type="submit" class="btn btn-primary">Search</button>
             <a href="/" class="btn btn-secondary">Clear</a>
-            {% if my_tickets_url %}
-                <a href="{{ my_tickets_url }}" class="btn btn-secondary"
-                   title="Open + Hold tickets assigned to {{ current_user_full_name }}">My Tickets</a>
+            {% if current_user_full_name %}
+                <button type="button" class="btn btn-secondary"
+                        data-rep-name="{{ current_user_full_name }}"
+                        onclick="applyMyTicketsFilter(this)"
+                        title="Show Open + Hold tickets assigned to {{ current_user_full_name }} — keeps any other filters you have typed">My Tickets</button>
             {% endif %}
             {% if submitted and total > 0 %}
                 <a href="/tickets/export.csv?{{ export_query }}" class="btn btn-export">Download CSV</a>
@@ -745,7 +810,7 @@
             <div class="spacer"></div>
             <label class="perpage">
                 Per page
-                <select name="per_page" onchange="this.form.submit()">
+                <select name="per_page" onchange="changePerPage(this)">
                     {% for n in [25, 50, 100, 200, 500] %}
                         <option value="{{ n }}" {% if per_page == n %}selected{% endif %}>{{ n }}</option>
                     {% endfor %}
@@ -785,7 +850,12 @@
                 <tbody>
                     {% for t in tickets %}
                     {% set tnum = lookup(t, 'ticket_id') %}
-                    <tr class="ticket-row" data-ticket="{{ tnum }}" onclick="toggleComments(this)">
+                    <tr class="ticket-row" data-ticket="{{ tnum }}"
+                        tabindex="0" role="button" aria-expanded="false"
+                        aria-controls="comments-{{ tnum }}"
+                        aria-label="Expand comments for ticket {{ tnum }}"
+                        onclick="toggleComments(this)"
+                        onkeydown="onTicketRowKey(event, this)">
                         {% for col in columns %}
                             {% if col == 'status' %}
                                 {% set sval = lookup(t, col) %}
@@ -1164,12 +1234,54 @@ async function toggleComments(row) {
     if (showing) {
         target.style.display = 'none';
         row.classList.remove('expanded');
+        row.setAttribute('aria-expanded', 'false');
         return;
     }
     target.style.display = '';
     row.classList.add('expanded');
+    row.setAttribute('aria-expanded', 'true');
     if (_commentsLoaded.has(tnum)) return;
     await loadComments(tnum);
+}
+
+// Keyboard activation for ticket rows. Enter/Space mirrors a mouse
+// click; we suppress the default Space-scroll so the row toggle wins.
+function onTicketRowKey(ev, row) {
+    if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar') {
+        // Don't trigger if focus is on the Summarize button inside the row
+        if (ev.target.closest('.actions-cell')) return;
+        ev.preventDefault();
+        toggleComments(row);
+    }
+}
+
+// Apply the "My Tickets" filter in-place: tick only the current user's
+// service-rep box, force status to Open+Hold, then submit. Critically
+// preserves any other filters the user has already typed — clicking the
+// button used to navigate to a fresh URL and silently drop in-progress
+// input.
+// Change per-page without submitting whatever the user happens to have
+// typed in the filter form (which would be confusing — they didn't ask
+// to search). We navigate the *current URL* with per_page updated,
+// preserving only filters that were actually applied via Search.
+function changePerPage(select) {
+    const url = new URL(window.location.href);
+    url.searchParams.set('per_page', select.value);
+    url.searchParams.delete('page');  // reset to first page
+    window.location.href = url.toString();
+}
+
+function applyMyTicketsFilter(btn) {
+    const repName = btn.dataset.repName;
+    if (!repName) return;
+    const form = btn.closest('form');
+    if (!form) return;
+    form.querySelectorAll('input[name="service_reps"]').forEach(c => {
+        c.checked = c.value === repName;
+    });
+    const statusSelect = form.querySelector('select[name="status"]');
+    if (statusSelect) statusSelect.value = 'B';
+    form.submit();
 }
 
 async function loadComments(tnum) {
@@ -1215,7 +1327,7 @@ function renderComments(pane, notes) {
     pane.innerHTML = '';
     if (!notes.length) {
         const empty = document.createElement('div');
-        empty.className = 'comments-loading';
+        empty.className = 'comments-empty';
         empty.textContent = 'No comments on this ticket.';
         pane.appendChild(empty);
         return;
