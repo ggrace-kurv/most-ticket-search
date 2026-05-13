@@ -16,6 +16,8 @@ import logging
 import os
 import secrets
 import threading
+import time
+from collections import OrderedDict
 from datetime import datetime, timedelta
 from functools import wraps
 from io import StringIO
@@ -99,8 +101,35 @@ def _set_security_headers(response):
 # and the (S(...)) session id across calls — which matters when a user
 # clicks through 5+ pages in a minute. Keyed by a per-login UUID stored
 # in session["user_id"]; cleared on logout and on auth failure.
-_clients: Dict[str, MOST2Client] = {}
+#
+# Bounded LRU: without this, users who close their tab without signing
+# out would leak a MOST2Client (and its in-memory password) into the
+# dict forever, until process restart. We sweep two ways: by idle TTL
+# matching the cookie lifetime, and by hard count if traffic spikes.
+_CLIENTS_MAX = int(os.getenv("MAX_CACHED_CLIENTS", "500"))
+_CLIENTS_TTL_SECONDS = config.SESSION_LIFETIME_SECONDS
+_clients: "OrderedDict[str, Tuple[MOST2Client, float]]" = OrderedDict()
 _clients_lock = threading.Lock()
+
+
+def _sweep_stale_clients_locked(now: float) -> None:
+    """Evict clients whose last_used is older than _CLIENTS_TTL_SECONDS.
+
+    Caller must hold _clients_lock. The OrderedDict is maintained in
+    LRU order (front = oldest), so peeking the head and popping until
+    we hit a fresh entry is enough — no full scan needed.
+    """
+    while _clients:
+        oldest_uid = next(iter(_clients))
+        _, last_used = _clients[oldest_uid]
+        if now - last_used > _CLIENTS_TTL_SECONDS:
+            _clients.popitem(last=False)
+            logger.info(
+                "evicted idle client user_id=%s (idle > %ds)",
+                oldest_uid, _CLIENTS_TTL_SECONDS,
+            )
+        else:
+            break
 
 
 def _get_client() -> Optional[MOST2Client]:
@@ -126,12 +155,26 @@ def _get_client() -> Optional[MOST2Client]:
             user_id,
         )
         return None
+
+    now = time.time()
     with _clients_lock:
-        client = _clients.get(user_id)
-        if client is not None:
+        _sweep_stale_clients_locked(now)
+        if user_id in _clients:
+            client, _ = _clients[user_id]
+            # Refresh recency: move to the back (most-recent end) of the
+            # LRU and bump last_used so _sweep_stale_clients_locked treats
+            # this user as active.
+            _clients.move_to_end(user_id)
+            _clients[user_id] = (client, now)
             return client
         client = MOST2Client(username, password)
-        _clients[user_id] = client
+        if len(_clients) >= _CLIENTS_MAX:
+            evicted_uid, _ = _clients.popitem(last=False)
+            logger.warning(
+                "client cache at cap (%d) — evicted LRU user_id=%s",
+                _CLIENTS_MAX, evicted_uid,
+            )
+        _clients[user_id] = (client, now)
         return client
 
 
@@ -839,7 +882,13 @@ def login():
                 # without a fresh GET of /TicketSearch.aspx on every request.
                 session["full_name"] = client.full_name
                 with _clients_lock:
-                    _clients[user_id] = client
+                    if len(_clients) >= _CLIENTS_MAX:
+                        evicted_uid, _ = _clients.popitem(last=False)
+                        logger.warning(
+                            "client cache at cap (%d) — evicted LRU user_id=%s on login",
+                            _CLIENTS_MAX, evicted_uid,
+                        )
+                    _clients[user_id] = (client, time.time())
                 logger.info("user logged in: %s", client.username_bare)
                 # Only allow same-origin next paths so we don't open an
                 # open-redirect on /login?next=https://evil/.
