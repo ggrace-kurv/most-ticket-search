@@ -1,16 +1,22 @@
 """Environment-driven config. All values read once at import."""
+import logging
 import os
+import secrets
+import sys
+
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 def _read_username():
     """Read USERNAME from .env preserving the literal backslash in domain\\user.
 
-    python-dotenv handles this correctly in modern versions, but the original
-    project's MOST2Integration explicitly read .env line-by-line as a workaround.
-    Mirrored here for parity.
+    Optional now that per-user login is the primary auth path. Kept so
+    health-check / smoke-test scripts that set USERNAME in .env continue
+    to work without a login form.
     """
     try:
         with open(".env", "r") as f:
@@ -22,6 +28,9 @@ def _read_username():
     return os.getenv("USERNAME", "")
 
 
+# Optional fallback creds. Left in place so /health and CI scripts can
+# warm up without an interactive login, but unused for serving any
+# logged-in user — each user authenticates with their own MOST2 account.
 USERNAME = _read_username()
 PASSWORD = os.getenv("PASSWORD", "")
 
@@ -258,4 +267,43 @@ PROBLEM_TYPES = [
 FLASK_HOST = os.getenv("FLASK_HOST", "127.0.0.1")
 FLASK_PORT = int(os.getenv("FLASK_PORT", "5003"))
 FLASK_DEBUG = os.getenv("FLASK_DEBUG", "False").lower() == "true"
-SECRET_KEY = os.getenv("SECRET_KEY", "change-me")
+
+
+def _resolve_secret_key() -> str:
+    """SECRET_KEY drives Flask's session cookie signing.
+
+    Production must set SECRET_KEY in .env. If missing in debug mode we
+    generate an ephemeral one (sessions die at restart, which is fine
+    for local dev); in non-debug mode we refuse to start with a default
+    or placeholder value, since reusing "change-me" would let anyone
+    forge a session cookie for any user.
+    """
+    val = os.getenv("SECRET_KEY", "")
+    if val and val != "change-me":
+        return val
+    if FLASK_DEBUG:
+        logger.warning(
+            "SECRET_KEY not set; generating an ephemeral key. "
+            "Sessions will not survive process restart."
+        )
+        return secrets.token_hex(32)
+    print(
+        "FATAL: SECRET_KEY is unset or set to the default placeholder. "
+        "Generate one with `python -c 'import secrets; print(secrets.token_hex(32))'` "
+        "and add it to .env before starting the app.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+SECRET_KEY = _resolve_secret_key()
+
+# Per-user MOST2 sessions are stored server-side via flask-session, so
+# only an opaque session id rides in the cookie. The session file holds
+# the user's MOST2 password — restrict the directory's filesystem perms.
+SESSION_FILE_DIR = os.getenv("SESSION_FILE_DIR", "/tmp/most-ticket-search-sessions")
+# Auto-logout after this many seconds of inactivity. Default 8h covers a
+# work day without forcing a re-login mid-task.
+SESSION_LIFETIME_SECONDS = int(os.getenv("SESSION_LIFETIME_SECONDS", str(60 * 60 * 8)))
+# Set to "false" only for local HTTP development. Production must be HTTPS.
+SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "true").lower() != "false"

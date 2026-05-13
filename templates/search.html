@@ -57,6 +57,32 @@
             letter-spacing: -0.01em; margin: 0;
         }
         .page-head .subtitle { color: var(--c-text-muted); font-size: 13px; }
+        .page-head-right {
+            display: flex; align-items: center; gap: 16px;
+            flex-wrap: wrap;
+        }
+        .user-chip {
+            display: inline-flex; align-items: center; gap: 8px;
+            background: var(--c-primary-soft); color: var(--c-primary);
+            padding: 4px 4px 4px 12px;
+            border-radius: 999px;
+            font-size: 12px; font-weight: 600;
+            letter-spacing: 0.02em;
+        }
+        .user-chip .logout-link {
+            color: var(--c-primary);
+            background: white;
+            text-decoration: none;
+            border: 1px solid rgba(0, 83, 0, 0.2);
+            padding: 3px 10px;
+            border-radius: 999px;
+            font-weight: 500;
+            transition: background .12s, border-color .12s;
+        }
+        .user-chip .logout-link:hover {
+            background: var(--c-primary); color: white;
+            border-color: var(--c-primary);
+        }
 
         /* Filter card */
         .filters {
@@ -539,11 +565,19 @@
 <div class="container">
     <div class="page-head">
         <h1>MOST2 Ticket Search</h1>
-        {% if submitted %}
-            <span class="subtitle">Live search · {{ total }} matching ticket{{ '' if total == 1 else 's' }}</span>
-        {% else %}
-            <span class="subtitle">Filter and click <strong>Search</strong> to query MOST2</span>
-        {% endif %}
+        <div class="page-head-right">
+            {% if submitted %}
+                <span class="subtitle">Live search · {{ total }} matching ticket{{ '' if total == 1 else 's' }}</span>
+            {% else %}
+                <span class="subtitle">Filter and click <strong>Search</strong> to query MOST2</span>
+            {% endif %}
+            {% if current_user %}
+                <span class="user-chip" title="Signed-in MOST2 account">
+                    {{ current_user }}
+                    <a href="{{ url_for('logout') }}" class="logout-link">Sign out</a>
+                </span>
+            {% endif %}
+        </div>
     </div>
 
     <form method="get" class="filters">
@@ -686,6 +720,10 @@
         <div class="actions">
             <button type="submit" class="btn btn-primary">Search</button>
             <a href="/" class="btn btn-secondary">Clear</a>
+            {% if my_tickets_url %}
+                <a href="{{ my_tickets_url }}" class="btn btn-secondary"
+                   title="Open + Hold tickets assigned to {{ current_user_full_name }}">My Tickets</a>
+            {% endif %}
             {% if submitted and total > 0 %}
                 <a href="/tickets/export.csv?{{ export_query }}" class="btn btn-export">Download CSV</a>
             {% else %}
