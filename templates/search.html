@@ -69,7 +69,27 @@
         }
         .filter-grid {
             display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 14px 16px; margin-bottom: 16px;
+            gap: 14px 16px; margin-bottom: 0;
+        }
+        .filter-section {
+            border: none; padding: 0; margin: 0;
+            border-top: 1px solid var(--c-border);
+            padding-top: 14px; margin-top: 14px;
+        }
+        .filter-section:first-of-type {
+            border-top: none; padding-top: 0; margin-top: 0;
+        }
+        .filter-section > legend {
+            font-size: 11px; font-weight: 700;
+            text-transform: uppercase; letter-spacing: 0.08em;
+            color: var(--c-primary);
+            padding: 0 0 10px 0;
+        }
+        .filter-grid-assignment {
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        }
+        .filter-grid-assignment .multiselect-block {
+            grid-column: auto;
         }
         .filter-grid label {
             display: flex; flex-direction: column;
@@ -120,16 +140,17 @@
         .btn[disabled], .btn.disabled { opacity: 0.45; pointer-events: none; box-shadow: none; }
 
         /* Multi-select blocks */
-        .multiselect-block { grid-column: span 2; }
-        .multiselect-block .checks, .multiselect-block select[multiple] {
+        .multiselect-block {
+            grid-column: span 2;
+            display: flex; flex-direction: column; gap: 6px;
+            font-size: 11px; font-weight: 600; text-transform: uppercase;
+            letter-spacing: 0.04em; color: var(--c-text-muted);
+        }
+        .multiselect-block .checks {
             display: block; max-height: 120px; overflow-y: auto;
             background: white; border: 1px solid var(--c-border-strong);
             border-radius: var(--radius-sm); padding: 8px 10px;
             font-family: inherit; font-size: 13px;
-        }
-        .multiselect-block select[multiple]:focus {
-            outline: none; border-color: var(--c-primary);
-            box-shadow: 0 0 0 3px rgba(0, 83, 0, 0.15);
         }
         .multiselect-block .checks label {
             display: flex; flex-direction: row; align-items: center; gap: 8px;
@@ -187,6 +208,13 @@
             border-right: 1px solid rgba(255,255,255,0.08);
         }
         th:last-child { border-right: none; }
+        th .sort-link {
+            color: inherit; text-decoration: none; cursor: pointer;
+            display: inline-block;
+            word-break: normal; overflow-wrap: break-word;
+        }
+        th .sort-link:hover { text-decoration: underline; }
+        th .sort-active { color: #ffe78a; }
         td {
             padding: 9px 10px; border-top: 1px solid var(--c-border);
             font-size: 13px; vertical-align: top;
@@ -321,6 +349,190 @@
             padding: 8px 22px 14px; border-top: 1px solid var(--c-border);
             text-transform: uppercase; letter-spacing: 0.04em;
         }
+
+        /* Combobox (searchable dropdown) ------------------------------- */
+        .combo {
+            position: relative;
+            display: flex; align-items: stretch;
+            background: white;
+            border: 1px solid var(--c-border-strong);
+            border-radius: var(--radius-sm);
+            transition: border-color .15s, box-shadow .15s;
+            font-family: inherit;
+        }
+        .combo.is-focused {
+            border-color: var(--c-primary);
+            box-shadow: 0 0 0 3px rgba(0, 83, 0, 0.15);
+        }
+        .combo .combo-input {
+            flex: 1; min-width: 0;
+            border: none; outline: none; background: transparent;
+            padding: 8px 10px; font-size: 14px; font-family: inherit;
+            color: var(--c-text);
+        }
+        .combo .combo-clear {
+            border: none; background: transparent;
+            color: var(--c-text-faint);
+            font-size: 18px; line-height: 1; padding: 0 10px;
+            cursor: pointer; align-self: stretch;
+            transition: color .12s;
+        }
+        .combo .combo-clear:hover { color: var(--c-text); }
+        .combo .combo-clear:focus-visible {
+            outline: 2px solid var(--c-primary); outline-offset: -2px;
+        }
+        .combo .combo-clear[hidden] { display: none; }
+        .combo .combo-list {
+            position: absolute; top: calc(100% + 2px); left: 0; right: 0;
+            background: white; border: 1px solid var(--c-border-strong);
+            border-radius: var(--radius-sm); box-shadow: var(--shadow-md);
+            max-height: 260px; overflow-y: auto;
+            margin: 0; padding: 4px 0;
+            list-style: none;
+            z-index: 50;
+        }
+        .combo .combo-list[hidden] { display: none; }
+        .combo .combo-option {
+            padding: 7px 12px; font-size: 13px; cursor: pointer;
+            color: var(--c-text);
+            display: flex; align-items: center; gap: 8px;
+        }
+        .combo .combo-option:hover,
+        .combo .combo-option.is-active {
+            background: var(--c-primary-soft);
+        }
+        .combo .combo-option.is-selected {
+            font-weight: 500; color: var(--c-primary);
+        }
+        .combo .combo-option.is-selected::before {
+            content: "✓"; color: var(--c-primary); font-weight: 700;
+        }
+        .combo .combo-option:not(.is-selected)::before {
+            content: ""; width: 8px;
+        }
+        .combo .combo-empty {
+            padding: 9px 12px; font-size: 12px;
+            color: var(--c-text-muted); font-style: italic;
+        }
+        .combo .combo-add-hint {
+            border-top: 1px dashed var(--c-border);
+            color: var(--c-text-muted); font-size: 12px;
+            padding: 8px 12px;
+        }
+        .combo .combo-add-hint strong { color: var(--c-text); }
+
+        /* Multi combobox: chips inside the field */
+        .combo-multi {
+            flex-wrap: wrap; padding: 4px 4px 4px 6px;
+            min-height: 36px; align-items: center;
+        }
+        .combo-multi .combo-input {
+            padding: 4px 4px; min-width: 80px; flex: 1 1 80px;
+        }
+        .combo-multi .combo-chips {
+            display: contents;
+        }
+        .combo-chip {
+            display: inline-flex; align-items: center; gap: 4px;
+            background: var(--c-primary-soft); color: var(--c-primary);
+            border-radius: 999px; padding: 2px 4px 2px 10px;
+            font-size: 12px; font-weight: 500; line-height: 1.4;
+            margin: 2px 4px 2px 0; max-width: 100%;
+        }
+        .combo-chip span {
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+            max-width: 220px;
+        }
+        .combo-chip button {
+            border: none; background: rgba(0, 83, 0, 0.12);
+            color: var(--c-primary); border-radius: 999px;
+            width: 18px; height: 18px; font-size: 13px; line-height: 1;
+            cursor: pointer; padding: 0;
+            transition: background .12s;
+        }
+        .combo-chip button:hover { background: rgba(0, 83, 0, 0.22); }
+
+        /* Service rep filter input */
+        .reps-filter {
+            padding: 6px 10px;
+            border: 1px solid var(--c-border-strong);
+            border-radius: var(--radius-sm);
+            font-size: 13px; font-family: inherit;
+            background: white; margin-bottom: 6px;
+            text-transform: none; letter-spacing: 0; font-weight: 400;
+            color: var(--c-text);
+        }
+        .reps-filter:focus {
+            outline: none; border-color: var(--c-primary);
+            box-shadow: 0 0 0 3px rgba(0, 83, 0, 0.15);
+        }
+
+        /* Summary modal: chat thread ---------------------------------- */
+        .modal-card.has-chat { max-height: 86vh; }
+        .summary-section {
+            padding: 20px 22px 8px;
+            line-height: 1.6; font-size: 14px;
+            white-space: pre-wrap; word-break: break-word;
+            max-width: 68ch; margin: 0 auto; width: 100%;
+        }
+        .summary-section.is-loading {
+            color: var(--c-text-muted); font-style: italic;
+            display: flex; align-items: center; gap: 8px;
+        }
+        .chat-thread {
+            padding: 0 22px 8px;
+            max-width: 68ch; margin: 0 auto; width: 100%;
+        }
+        .chat-thread:empty { display: none; }
+        .chat-msg {
+            border-top: 1px solid var(--c-border);
+            padding: 12px 0;
+            display: flex; flex-direction: column; gap: 4px;
+            font-size: 14px; line-height: 1.55;
+        }
+        .chat-msg .who {
+            font-size: 11px; font-weight: 600;
+            text-transform: uppercase; letter-spacing: 0.05em;
+        }
+        .chat-msg.user .who { color: var(--c-primary); }
+        .chat-msg.assistant .who { color: var(--c-orange); }
+        .chat-msg.assistant.is-loading {
+            color: var(--c-text-muted); font-style: italic;
+            display: flex; flex-direction: row; align-items: center; gap: 8px;
+        }
+        .chat-msg .body {
+            white-space: pre-wrap; word-break: break-word;
+        }
+        .chat-msg.error .body { color: var(--c-danger); }
+        .chat-input-row {
+            padding: 14px 22px;
+            border-top: 1px solid var(--c-border);
+            background: #fafaf6;
+            display: flex; gap: 8px; align-items: flex-end;
+        }
+        .chat-input-row textarea {
+            flex: 1; min-height: 38px; max-height: 140px;
+            padding: 8px 10px; resize: none;
+            border: 1px solid var(--c-border-strong);
+            border-radius: var(--radius-sm);
+            font-size: 13px; font-family: inherit; line-height: 1.45;
+            background: white; color: var(--c-text);
+            transition: border-color .15s, box-shadow .15s;
+        }
+        .chat-input-row textarea:focus {
+            outline: none; border-color: var(--c-primary);
+            box-shadow: 0 0 0 3px rgba(0, 83, 0, 0.15);
+        }
+        .chat-input-row .send-btn {
+            padding: 8px 14px;
+        }
+        .chat-input-row .send-btn[disabled] {
+            opacity: 0.5; cursor: not-allowed;
+        }
+        .chat-hint {
+            font-size: 11px; color: var(--c-text-faint);
+            padding: 0 22px 8px; max-width: 68ch; margin: 0 auto; width: 100%;
+        }
     </style>
 </head>
 <body>
@@ -336,64 +548,141 @@
 
     <form method="get" class="filters">
         <input type="hidden" name="submitted" value="1">
-        <div class="filter-grid">
-            <label>Ticket ID
-                <input type="text" name="ticket_id" value="{{ filters.get('ticket_id', '') }}">
-            </label>
-            <label>Merchant ID
-                <input type="text" name="merchant_id" value="{{ filters.get('merchant_id', '') }}">
-            </label>
-            <label>CN
-                <input type="text" name="cn" value="{{ filters.get('cn', '') }}">
-            </label>
-            <label>Problem
-                <input type="text" name="problem" value="{{ filters.get('problem', '') }}">
-            </label>
-            <label>Office
-                <input type="text" name="office" value="{{ filters.get('office', '') }}">
-            </label>
-            <label>Status
-                <select name="status">
-                    {% set s = filters.get('status', '') %}
-                    <option value="B" {% if s in ('', 'B') %}selected{% endif %}>Open + Hold (default)</option>
-                    <option value="O" {% if s == 'O' %}selected{% endif %}>Open</option>
-                    <option value="H" {% if s == 'H' %}selected{% endif %}>Hold</option>
-                    <option value="C" {% if s == 'C' %}selected{% endif %}>Closed</option>
-                </select>
-            </label>
-            <label>Date From
-                <input type="date" name="date_from" value="{{ filters.get('date_from', '') }}">
-            </label>
-            <label>Date To
-                <input type="date" name="date_to" value="{{ filters.get('date_to', '') }}">
-            </label>
-            <label class="multiselect-block">Ownership Groups
-                <select name="ownership_groups" multiple size="5">
-                    {% for g in all_groups %}
-                        <option value="{{ g }}" {% if g in selected_groups %}selected{% endif %}>{{ g }}</option>
-                    {% endfor %}
-                </select>
-                <div class="multiselect-actions">
-                    <a onclick="selectAll('ownership_groups', true)">Select all</a>
-                    <a onclick="selectAll('ownership_groups', false)">Clear</a>
+
+        <fieldset class="filter-section">
+            <legend>Ticket Identity</legend>
+            <div class="filter-grid">
+                <label>Ticket ID
+                    <input type="text" name="ticket_id" value="{{ filters.get('ticket_id', '') }}">
+                </label>
+                <label>CN
+                    <input type="text" name="cn" value="{{ filters.get('cn', '') }}">
+                </label>
+                <label>Merchant ID
+                    <input type="text" name="merchant_id" value="{{ filters.get('merchant_id', '') }}">
+                </label>
+                <label>Chain #
+                    <input type="text" name="chain" value="{{ filters.get('chain', '') }}">
+                </label>
+                <label>Office
+                    <input type="text" name="office" value="{{ filters.get('office', '') }}">
+                </label>
+            </div>
+        </fieldset>
+
+        <fieldset class="filter-section">
+            <legend>Categorization</legend>
+            <div class="filter-grid">
+                <label>Status
+                    <select name="status">
+                        {% set s = filters.get('status', 'B') %}
+                        <option value="B" {% if s == 'B' %}selected{% endif %}>Open + Hold (default)</option>
+                        <option value="O" {% if s == 'O' %}selected{% endif %}>Open</option>
+                        <option value="H" {% if s == 'H' %}selected{% endif %}>Hold</option>
+                        <option value="C" {% if s == 'C' %}selected{% endif %}>Closed</option>
+                        <option value="A" {% if s == 'A' %}selected{% endif %}>Any</option>
+                    </select>
+                </label>
+                <label>Verification Status
+                    <select name="verification_status">
+                        {% set v = filters.get('verification_status', '') %}
+                        <option value="" {% if not v %}selected{% endif %}>(any)</option>
+                        <option value="1" {% if v == '1' %}selected{% endif %}>Green</option>
+                        <option value="3" {% if v == '3' %}selected{% endif %}>Yellow</option>
+                        <option value="4" {% if v == '4' %}selected{% endif %}>Orange</option>
+                        <option value="2" {% if v == '2' %}selected{% endif %}>Red</option>
+                    </select>
+                </label>
+                <label>Problem Group
+                    <div class="combo">
+                        <input type="hidden" name="problem_group" value="{{ filters.get('problem_group', '') }}">
+                        <input type="text" class="combo-input" placeholder="(any)" autocomplete="off">
+                        <button type="button" class="combo-clear" tabindex="-1" aria-label="Clear">&times;</button>
+                        <ul class="combo-list" role="listbox" hidden>
+                            <li class="combo-option" data-value="" data-label="(any)">(any)</li>
+                            {% for p in problem_groups %}
+                                <li class="combo-option" data-value="{{ p.id }}" data-label="{{ p.label }}">{{ p.label }}</li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                </label>
+                <label>Problem
+                    <div class="combo" data-allow-custom="true">
+                        <input type="hidden" name="problem" value="{{ filters.get('problem', '') }}">
+                        <input type="text" class="combo-input" placeholder="(any) — type to filter or add"
+                               autocomplete="off">
+                        <button type="button" class="combo-clear" tabindex="-1" aria-label="Clear">&times;</button>
+                        <ul class="combo-list" role="listbox" hidden>
+                            <li class="combo-option" data-value="" data-label="(any)">(any)</li>
+                            {% for pt in problem_types %}
+                                <li class="combo-option" data-value="{{ pt }}" data-label="{{ pt }}">{{ pt }}</li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                </label>
+            </div>
+        </fieldset>
+
+        <fieldset class="filter-section">
+            <legend>Dates</legend>
+            <div class="filter-grid">
+                <label>Opened From
+                    <input type="date" name="date_from" value="{{ filters.get('date_from', '') }}">
+                </label>
+                <label>Opened To
+                    <input type="date" name="date_to" value="{{ filters.get('date_to', '') }}">
+                </label>
+                <label>Closed From
+                    <input type="date" name="closed_from" value="{{ filters.get('closed_from', '') }}">
+                </label>
+                <label>Closed To
+                    <input type="date" name="closed_to" value="{{ filters.get('closed_to', '') }}">
+                </label>
+            </div>
+        </fieldset>
+
+        <fieldset class="filter-section">
+            <legend>Assignment</legend>
+            <div class="filter-grid filter-grid-assignment">
+                <label class="multiselect-block">Ownership Groups
+                    <div class="combo combo-multi">
+                        <select name="ownership_groups" multiple hidden>
+                            {% for g in all_groups %}
+                                <option value="{{ g }}" {% if g in selected_groups %}selected{% endif %}>{{ g }}</option>
+                            {% endfor %}
+                        </select>
+                        <div class="combo-chips"></div>
+                        <input type="text" class="combo-input" placeholder="Type to filter..." autocomplete="off">
+                        <ul class="combo-list" role="listbox" hidden>
+                            {% for g in all_groups %}
+                                <li class="combo-option" data-value="{{ g }}" data-label="{{ g }}">{{ g }}</li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                    <div class="multiselect-actions">
+                        <a onclick="multiSelectAll(this, true)">Select all</a>
+                        <a onclick="multiSelectAll(this, false)">Clear</a>
+                    </div>
+                </label>
+                <div class="multiselect-block">Service Reps
+                    <input type="text" class="reps-filter" placeholder="Filter reps..."
+                           oninput="filterChecks('service_reps', this.value)">
+                    <div class="checks">
+                        {% for r in service_reps %}
+                            <label>
+                                <input type="checkbox" name="service_reps" value="{{ r }}"
+                                       {% if r in selected_reps %}checked{% endif %}> {{ r }}
+                            </label>
+                        {% endfor %}
+                    </div>
+                    <div class="multiselect-actions">
+                        <a onclick="checkOnly('service_reps', TEAM_REPS)">My team</a>
+                        <a onclick="checkAll('service_reps', false)">Clear</a>
+                    </div>
                 </div>
-            </label>
-            <label class="multiselect-block">Service Reps
-                <div class="checks">
-                    {% set checked_reps = selected_reps if submitted else (team_reps | map('string') | list) %}
-                    {% for r in team_reps %}
-                        <label>
-                            <input type="checkbox" name="service_reps" value="{{ r }}"
-                                   {% if r in checked_reps %}checked{% endif %}> {{ r }}
-                        </label>
-                    {% endfor %}
-                </div>
-                <div class="multiselect-actions">
-                    <a onclick="checkAll('service_reps', true)">My team</a>
-                    <a onclick="checkAll('service_reps', false)">Clear</a>
-                </div>
-            </label>
-        </div>
+            </div>
+        </fieldset>
+
         <div class="actions">
             <button type="submit" class="btn btn-primary">Search</button>
             <a href="/" class="btn btn-secondary">Clear</a>
@@ -432,19 +721,20 @@
             <table>
                 <thead>
                     <tr>
-                        <th style="width: 110px">Actions</th>
                         {% for col in columns %}
-                            <th>{{ column_labels.get(col, col.replace('_', ' ').title()) }}</th>
+                            <th>
+                                <a class="sort-link {% if sort_col == col %}sort-active{% endif %}" href="{{ sort_url(col) }}">
+                                    {{ column_labels.get(col, col.replace('_', ' ').title()) }}{% if sort_col == col %}{% if sort_dir == 'desc' %} ↓{% else %} ↑{% endif %}{% endif %}
+                                </a>
+                            </th>
                         {% endfor %}
+                        <th style="width: 110px">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for t in tickets %}
                     {% set tnum = lookup(t, 'ticket_id') %}
                     <tr class="ticket-row" data-ticket="{{ tnum }}" onclick="toggleComments(this)">
-                        <td class="actions-cell" onclick="event.stopPropagation()">
-                            <button type="button" class="row-action" onclick="openSummary('{{ tnum }}')">Summarize</button>
-                        </td>
                         {% for col in columns %}
                             {% if col == 'status' %}
                                 {% set sval = lookup(t, col) %}
@@ -453,6 +743,9 @@
                                 <td>{{ lookup(t, col) }}</td>
                             {% endif %}
                         {% endfor %}
+                        <td class="actions-cell" onclick="event.stopPropagation()">
+                            <button type="button" class="row-action" onclick="openSummary('{{ tnum }}')">Summarize</button>
+                        </td>
                     </tr>
                     <tr class="comments-row" id="comments-{{ tnum }}" style="display:none;">
                         <td colspan="{{ columns | length + 1 }}">
@@ -487,23 +780,328 @@
 </div>
 
 <div id="summary-modal" class="modal-backdrop" style="display:none;" onclick="closeSummary(event)">
-    <div class="modal-card" onclick="event.stopPropagation()">
+    <div class="modal-card has-chat" onclick="event.stopPropagation()">
         <div class="modal-head">
             <h3 id="summary-title">Ticket Summary</h3>
             <button type="button" class="modal-close" onclick="closeSummary()" aria-label="Close">&times;</button>
         </div>
-        <div id="summary-body" class="modal-body">Loading…</div>
+        <div class="modal-body" id="summary-scroll">
+            <div id="summary-body" class="summary-section is-loading">
+                <span class="spinner"></span> Generating summary… Claude can take a few seconds.
+            </div>
+            <div id="chat-thread" class="chat-thread"></div>
+            <div class="chat-hint">Answers are based only on this ticket's comment thread.</div>
+        </div>
+        <form class="chat-input-row" id="chat-form" onsubmit="return sendFollowup(event)">
+            <textarea id="chat-input" rows="1" placeholder="Ask a follow-up about this ticket…"
+                      onkeydown="onChatKeydown(event)" oninput="autosize(this)" disabled></textarea>
+            <button type="submit" class="btn btn-primary send-btn" id="chat-send" disabled>Ask</button>
+        </form>
         <div id="summary-meta" class="modal-meta"></div>
     </div>
 </div>
 
 <script>
-function selectAll(name, on) {
-    document.querySelectorAll('select[name="' + name + '"] option').forEach(o => o.selected = on);
-}
+const TEAM_REPS = {{ team_reps|tojson }};
+
 function checkAll(name, on) {
     document.querySelectorAll('input[name="' + name + '"]').forEach(c => c.checked = on);
 }
+function checkOnly(name, values) {
+    const set = new Set(values);
+    document.querySelectorAll('input[name="' + name + '"]').forEach(c => {
+        c.checked = set.has(c.value);
+    });
+}
+function filterChecks(name, term) {
+    const needle = (term || '').toLowerCase().trim();
+    document.querySelectorAll('input[name="' + name + '"]').forEach(c => {
+        const lbl = c.parentElement;
+        if (!lbl) return;
+        lbl.style.display = (!needle || c.value.toLowerCase().includes(needle)) ? '' : 'none';
+    });
+}
+
+// Combobox helpers used by the inline "Select all" / "Clear" links on the
+// multi-combobox. `el` is the <a>; walk up to the .multiselect-block, find
+// the combo-multi inside, then toggle every option through the hidden
+// <select> and re-render.
+function multiSelectAll(el, on) {
+    const block = el.closest('.multiselect-block');
+    if (!block) return;
+    const combo = block.querySelector('.combo-multi');
+    if (!combo || !combo._comboApi) return;
+    combo._comboApi.setAll(on);
+}
+
+// ------- Combobox -------------------------------------------------------
+// Two flavours sharing the same DOM scaffolding:
+//   - single: hidden <input name="..."> + visible text input
+//   - multi : hidden <select multiple name="..."> + chips inside the field
+// For singles with data-allow-custom="true" the user can commit any text
+// (Problem field — covers MOST2 types we haven't catalogued yet).
+
+function initComboboxes() {
+    document.querySelectorAll('.combo').forEach(initCombobox);
+}
+
+function initCombobox(combo) {
+    const isMulti = combo.classList.contains('combo-multi');
+    const input = combo.querySelector('.combo-input');
+    const list = combo.querySelector('.combo-list');
+    const options = Array.from(list.querySelectorAll('.combo-option'));
+    const allowCustom = combo.dataset.allowCustom === 'true';
+
+    let activeIndex = -1;
+    let filteredOptions = options.slice();
+
+    // Build the "empty" / "add custom" placeholders once and reuse.
+    const emptyEl = document.createElement('li');
+    emptyEl.className = 'combo-empty';
+    emptyEl.textContent = 'No matches.';
+    const addHint = document.createElement('li');
+    addHint.className = 'combo-add-hint';
+
+    function open() {
+        list.hidden = false;
+        combo.classList.add('is-focused');
+    }
+    function close() {
+        list.hidden = true;
+        combo.classList.remove('is-focused');
+        activeIndex = -1;
+    }
+
+    function highlight(i) {
+        list.querySelectorAll('.combo-option.is-active').forEach(o => o.classList.remove('is-active'));
+        activeIndex = i;
+        if (i >= 0 && i < filteredOptions.length) {
+            const opt = filteredOptions[i];
+            opt.classList.add('is-active');
+            opt.scrollIntoView({block: 'nearest'});
+        }
+    }
+
+    function filter(term) {
+        const needle = term.toLowerCase().trim();
+        filteredOptions = options.filter(o => {
+            const label = (o.dataset.label || o.textContent).toLowerCase();
+            const match = !needle || label.includes(needle);
+            o.style.display = match ? '' : 'none';
+            return match;
+        });
+
+        // Empty placeholder
+        if (filteredOptions.length === 0) {
+            if (!list.contains(emptyEl)) list.appendChild(emptyEl);
+        } else if (list.contains(emptyEl)) {
+            list.removeChild(emptyEl);
+        }
+
+        // Custom-add hint (single combobox with data-allow-custom only)
+        if (allowCustom && !isMulti) {
+            const exactMatch = options.some(o =>
+                (o.dataset.label || '').toLowerCase() === needle && o.dataset.value !== ''
+            );
+            if (needle && !exactMatch) {
+                addHint.innerHTML = 'Press Enter to use <strong></strong> as a custom value.';
+                addHint.querySelector('strong').textContent = term.trim();
+                if (!list.contains(addHint)) list.appendChild(addHint);
+            } else if (list.contains(addHint)) {
+                list.removeChild(addHint);
+            }
+        }
+        activeIndex = filteredOptions.length > 0 ? 0 : -1;
+        highlight(activeIndex);
+    }
+
+    if (isMulti) {
+        // --- Multi-combobox -------------------------------------------
+        const select = combo.querySelector('select');
+        const chipsBox = combo.querySelector('.combo-chips');
+
+        function selectedValues() {
+            return Array.from(select.options).filter(o => o.selected).map(o => o.value);
+        }
+        function renderChips() {
+            chipsBox.innerHTML = '';
+            const selected = new Set(selectedValues());
+            // Update option visual state in dropdown
+            options.forEach(o => {
+                o.classList.toggle('is-selected', selected.has(o.dataset.value));
+            });
+            // Emit chips
+            Array.from(select.options).filter(o => o.selected).forEach(o => {
+                const chip = document.createElement('span');
+                chip.className = 'combo-chip';
+                const lbl = document.createElement('span');
+                lbl.textContent = o.text;
+                chip.appendChild(lbl);
+                const x = document.createElement('button');
+                x.type = 'button';
+                x.textContent = '×';
+                x.setAttribute('aria-label', 'Remove ' + o.text);
+                x.onclick = (e) => {
+                    e.stopPropagation();
+                    toggleValue(o.value, false);
+                };
+                chip.appendChild(x);
+                chipsBox.appendChild(chip);
+            });
+        }
+        function toggleValue(value, on) {
+            const opt = Array.from(select.options).find(o => o.value === value);
+            if (!opt) return;
+            opt.selected = (on === undefined) ? !opt.selected : on;
+            renderChips();
+        }
+        function commitActive() {
+            if (activeIndex >= 0 && activeIndex < filteredOptions.length) {
+                toggleValue(filteredOptions[activeIndex].dataset.value);
+                input.value = '';
+                filter('');
+            }
+        }
+
+        // Expose API for the "Select all" / "Clear" links
+        combo._comboApi = {
+            setAll: (on) => {
+                Array.from(select.options).forEach(o => o.selected = !!on);
+                renderChips();
+            },
+        };
+
+        input.addEventListener('focus', open);
+        input.addEventListener('input', () => { open(); filter(input.value); });
+        combo.addEventListener('click', (e) => {
+            if (e.target.closest('.combo-option')) return;
+            if (e.target.tagName === 'BUTTON') return;
+            input.focus();
+            open();
+        });
+        list.addEventListener('mousedown', (e) => {
+            const li = e.target.closest('.combo-option');
+            if (!li) return;
+            e.preventDefault(); // keep focus on input
+            toggleValue(li.dataset.value);
+            input.value = '';
+            filter('');
+            input.focus();
+        });
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowDown') { e.preventDefault(); open();
+                highlight(Math.min(activeIndex + 1, filteredOptions.length - 1)); }
+            else if (e.key === 'ArrowUp') { e.preventDefault();
+                highlight(Math.max(activeIndex - 1, 0)); }
+            else if (e.key === 'Enter') {
+                if (!list.hidden) { e.preventDefault(); commitActive(); }
+            } else if (e.key === 'Escape') {
+                close();
+            } else if (e.key === 'Backspace' && input.value === '') {
+                const selected = selectedValues();
+                if (selected.length > 0) toggleValue(selected[selected.length - 1], false);
+            }
+        });
+        document.addEventListener('click', (e) => {
+            if (!combo.contains(e.target)) close();
+        });
+
+        renderChips();
+        filter('');
+    } else {
+        // --- Single combobox ------------------------------------------
+        const hidden = combo.querySelector('input[type="hidden"]');
+        const clearBtn = combo.querySelector('.combo-clear');
+
+        function syncDisplayFromValue() {
+            const v = hidden.value;
+            const opt = options.find(o => o.dataset.value === v);
+            input.value = opt ? (opt.dataset.label || opt.textContent) : (v || '');
+            options.forEach(o => o.classList.toggle('is-selected', o.dataset.value === v));
+            clearBtn.hidden = !v;
+        }
+        function setValue(v, label) {
+            hidden.value = v || '';
+            input.value = label || '';
+            options.forEach(o => o.classList.toggle('is-selected', o.dataset.value === hidden.value));
+            clearBtn.hidden = !hidden.value;
+        }
+        function commitActive() {
+            if (activeIndex >= 0 && activeIndex < filteredOptions.length) {
+                const opt = filteredOptions[activeIndex];
+                setValue(opt.dataset.value, opt.dataset.label || opt.textContent);
+                close();
+                return true;
+            }
+            if (allowCustom) {
+                const v = input.value.trim();
+                setValue(v, v);
+                close();
+                return true;
+            }
+            return false;
+        }
+
+        input.addEventListener('focus', () => { open(); filter(input.value); });
+        input.addEventListener('input', () => {
+            open();
+            filter(input.value);
+            // For allow-custom fields, mirror typed text into hidden value
+            // so a quick submit-without-pick still works.
+            if (allowCustom) hidden.value = input.value.trim();
+        });
+        clearBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            setValue('', '');
+            input.focus();
+            filter('');
+        });
+        list.addEventListener('mousedown', (e) => {
+            const li = e.target.closest('.combo-option');
+            if (!li) return;
+            e.preventDefault();
+            setValue(li.dataset.value, li.dataset.label || li.textContent);
+            close();
+            input.blur();
+        });
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowDown') { e.preventDefault(); open();
+                highlight(Math.min(activeIndex + 1, filteredOptions.length - 1)); }
+            else if (e.key === 'ArrowUp') { e.preventDefault();
+                highlight(Math.max(activeIndex - 1, 0)); }
+            else if (e.key === 'Enter') {
+                if (!list.hidden || allowCustom) { e.preventDefault(); commitActive(); }
+            } else if (e.key === 'Escape') {
+                close();
+                syncDisplayFromValue();
+            } else if (e.key === 'Tab') {
+                // If a single option matches exactly, accept it on Tab
+                if (!list.hidden && filteredOptions.length === 1) commitActive();
+                else close();
+            }
+        });
+        input.addEventListener('blur', () => {
+            // Defer so option clicks land first
+            setTimeout(() => {
+                if (list.hidden) return;
+                // No commit happened — restore display from hidden value
+                close();
+                syncDisplayFromValue();
+            }, 120);
+        });
+        document.addEventListener('click', (e) => {
+            if (!combo.contains(e.target)) {
+                close();
+                syncDisplayFromValue();
+            }
+        });
+
+        syncDisplayFromValue();
+        filter('');
+    }
+}
+
+document.addEventListener('DOMContentLoaded', initComboboxes);
 
 const _commentsLoaded = new Set();
 
@@ -604,9 +1202,17 @@ function escapeHTML(s) {
     })[c]);
 }
 
-// ---------- Summary modal ---------------------------------------------------
+// ---------- Summary modal + follow-up chat ----------------------------------
 
 const _summaryCache = new Map();
+// Per-ticket chat state for the currently open modal session. Cleared on
+// each openSummary() so each modal session starts fresh — keeps prompt size
+// bounded and matches user intent ("I'm done with that ticket, next one").
+let _activeTicket = null;
+let _activeSummary = '';
+let _chatHistory = [];   // [{role: 'user'|'assistant', content: str}, ...]
+let _chatBusy = false;
+let _scrollTimer = null;
 
 async function openSummary(tnum) {
     const modal = document.getElementById('summary-modal');
@@ -614,49 +1220,183 @@ async function openSummary(tnum) {
     const title = document.getElementById('summary-title');
     const body = document.getElementById('summary-body');
     const meta = document.getElementById('summary-meta');
+    const thread = document.getElementById('chat-thread');
+    const input = document.getElementById('chat-input');
+    const send = document.getElementById('chat-send');
+
     title.textContent = 'Ticket #' + tnum + ' — Summary';
     meta.textContent = '';
+    body.className = 'summary-section is-loading';
     body.innerHTML = '<span class="spinner"></span> Generating summary… Claude can take a few seconds.';
+    thread.innerHTML = '';
+    input.value = '';
+    input.disabled = true;
+    send.disabled = true;
+    autosize(input);
     modal.style.display = 'flex';
     closeBtn.focus();
 
-    if (_summaryCache.has(tnum)) {
-        const data = _summaryCache.get(tnum);
-        body.textContent = data.summary;
-        meta.textContent = `Based on ${data.note_count} note(s) · cached locally`;
-        return;
-    }
+    _activeTicket = String(tnum);
+    _activeSummary = '';
+    _chatHistory = [];
 
-    try {
-        const resp = await fetch('/api/tickets/' + encodeURIComponent(tnum) + '/summary');
-        const data = await resp.json();
-        if (!resp.ok) {
-            body.textContent = 'Error: ' + (data.error || resp.statusText);
+    let data;
+    if (_summaryCache.has(tnum)) {
+        data = _summaryCache.get(tnum);
+        meta.textContent = `Based on ${data.note_count} note(s) · cached locally`;
+    } else {
+        try {
+            const resp = await fetch('/api/tickets/' + encodeURIComponent(tnum) + '/summary');
+            data = await resp.json();
+            if (!resp.ok) {
+                body.className = 'summary-section';
+                body.textContent = 'Error: ' + (data.error || resp.statusText);
+                return;
+            }
+            meta.textContent = `Based on ${data.note_count} note(s) · ${data.cached ? 'server cache hit' : 'fresh from Claude'}`;
+            _summaryCache.set(tnum, data);
+        } catch (e) {
+            body.className = 'summary-section';
+            body.textContent = 'Error: ' + e.message;
             return;
         }
-        body.textContent = data.summary;
-        meta.textContent = `Based on ${data.note_count} note(s) · ${data.cached ? 'server cache hit' : 'fresh from Claude'}`;
-        _summaryCache.set(tnum, data);
-    } catch (e) {
-        body.textContent = 'Error: ' + e.message;
     }
+    // Race: if user closed the modal or opened another ticket while we were
+    // waiting, ignore the result. _activeTicket is the source of truth.
+    if (_activeTicket !== String(tnum)) return;
+
+    body.className = 'summary-section';
+    body.textContent = data.summary;
+    _activeSummary = data.summary || '';
+    input.disabled = false;
+    send.disabled = false;
 }
 
 function closeSummary(event) {
     if (event && event.target && event.target.closest('.modal-card')
         && !event.target.classList.contains('modal-close')) {
-        // click inside the card — ignore
-        return;
+        return; // click inside the card
     }
     document.getElementById('summary-modal').style.display = 'none';
+    _activeTicket = null;
+    _chatHistory = [];
 }
 
 document.addEventListener('keydown', e => {
     if (e.key === 'Escape') {
         const m = document.getElementById('summary-modal');
-        if (m && m.style.display !== 'none') m.style.display = 'none';
+        if (m && m.style.display !== 'none') {
+            m.style.display = 'none';
+            _activeTicket = null;
+            _chatHistory = [];
+        }
     }
 });
+
+// --- chat helpers ------------------------------------------------------
+
+function autosize(el) {
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 140) + 'px';
+}
+
+function onChatKeydown(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendFollowup(e);
+    }
+}
+
+function scrollChatToEnd() {
+    // Defer to next frame so newly-appended DOM has measured layout.
+    if (_scrollTimer) cancelAnimationFrame(_scrollTimer);
+    _scrollTimer = requestAnimationFrame(() => {
+        const scroller = document.getElementById('summary-scroll');
+        if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    });
+}
+
+function appendChatMessage(role, content, extra) {
+    const thread = document.getElementById('chat-thread');
+    const msg = document.createElement('div');
+    msg.className = 'chat-msg ' + role + (extra ? ' ' + extra : '');
+    const who = document.createElement('div');
+    who.className = 'who';
+    who.textContent = role === 'user' ? 'You' : 'Claude';
+    const body = document.createElement('div');
+    body.className = 'body';
+    body.textContent = content;
+    msg.appendChild(who);
+    msg.appendChild(body);
+    thread.appendChild(msg);
+    scrollChatToEnd();
+    return {msg, body};
+}
+
+async function sendFollowup(e) {
+    if (e && e.preventDefault) e.preventDefault();
+    if (_chatBusy || !_activeTicket) return false;
+
+    const input = document.getElementById('chat-input');
+    const send = document.getElementById('chat-send');
+    const question = input.value.trim();
+    if (!question) return false;
+
+    _chatBusy = true;
+    send.disabled = true;
+    input.disabled = true;
+    input.value = '';
+    autosize(input);
+
+    appendChatMessage('user', question);
+    const pending = appendChatMessage('assistant', 'Thinking…', 'is-loading');
+    pending.body.innerHTML = '<span class="spinner"></span> Thinking…';
+
+    // Snapshot history BEFORE appending the new question so the server gets
+    // the prior turns only; the question is sent in its own field.
+    const historySnapshot = _chatHistory.slice();
+    const ticketAtSend = _activeTicket;
+
+    try {
+        const resp = await fetch('/api/tickets/' + encodeURIComponent(ticketAtSend) + '/ask', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                question,
+                summary: _activeSummary,
+                history: historySnapshot,
+            }),
+        });
+        const data = await resp.json();
+        if (_activeTicket !== ticketAtSend) {
+            // Modal moved on; drop the result silently.
+            return false;
+        }
+        if (!resp.ok) {
+            pending.msg.classList.remove('is-loading');
+            pending.msg.classList.add('error');
+            pending.body.textContent = 'Error: ' + (data.error || resp.statusText);
+        } else {
+            pending.msg.classList.remove('is-loading');
+            pending.body.textContent = data.answer;
+            _chatHistory.push({role: 'user', content: question});
+            _chatHistory.push({role: 'assistant', content: data.answer});
+        }
+    } catch (err) {
+        pending.msg.classList.remove('is-loading');
+        pending.msg.classList.add('error');
+        pending.body.textContent = 'Error: ' + err.message;
+    } finally {
+        _chatBusy = false;
+        if (_activeTicket === ticketAtSend) {
+            input.disabled = false;
+            send.disabled = false;
+            input.focus();
+        }
+        scrollChatToEnd();
+    }
+    return false;
+}
 </script>
 
 </body>

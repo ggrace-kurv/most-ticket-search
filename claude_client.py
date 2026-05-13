@@ -139,23 +139,18 @@ Comments:
 """
 
 
-def summarize_ticket(ticket_number: Any, notes: List[Dict[str, Any]]) -> str:
-    """Run the claude CLI against a ticket's comment thread and return the summary text."""
+def _run_claude(prompt: str) -> str:
+    """Invoke the claude CLI with --print and return stdout (stripped).
+
+    Raises ClaudeError on missing binary, timeout, non-zero exit, or empty
+    output. Centralised so summarize_ticket and answer_followup share the
+    same error handling and model choice.
+    """
     if shutil.which(CLAUDE_BINARY) is None:
         raise ClaudeError(
             f"`{CLAUDE_BINARY}` not found on PATH. Install Claude Code or "
             f"adjust CLAUDE_BINARY in claude_client.py."
         )
-
-    transcript = _format_notes(notes)
-    if not transcript:
-        return "No comments on this ticket yet."
-
-    prompt = _PROMPT_TEMPLATE.format(
-        ticket_number=ticket_number,
-        comments=transcript,
-    )
-
     try:
         result = subprocess.run(
             [CLAUDE_BINARY, "--print", "--model", CLAUDE_MODEL],
@@ -173,8 +168,83 @@ def summarize_ticket(ticket_number: Any, notes: List[Dict[str, Any]]) -> str:
         stderr_snippet = (result.stderr or "").strip()[:500]
         raise ClaudeError(f"claude CLI exited {result.returncode}: {stderr_snippet}")
 
-    summary = (result.stdout or "").strip()
-    if not summary:
+    out = (result.stdout or "").strip()
+    if not out:
         raise ClaudeError("claude CLI returned empty output")
+    return out
+
+
+def summarize_ticket(ticket_number: Any, notes: List[Dict[str, Any]]) -> str:
+    """Run the claude CLI against a ticket's comment thread and return the summary text."""
+    transcript = _format_notes(notes)
+    if not transcript:
+        return "No comments on this ticket yet."
+
+    prompt = _PROMPT_TEMPLATE.format(
+        ticket_number=ticket_number,
+        comments=transcript,
+    )
+    summary = _run_claude(prompt)
     logger.info("summarized ticket %s (%d notes → %d chars)", ticket_number, len(notes), len(summary))
     return summary
+
+
+_ASK_PROMPT_TEMPLATE = """You are answering follow-up questions about an internal service ticket for a payments processor.
+
+You previously produced a short summary of this ticket. Below is the full ticket transcript (oldest first), that summary, and the conversation so far.
+
+Answer the latest user question using only the ticket transcript above (and facts established earlier in this conversation). Be concise and direct — a couple of sentences is usually enough. If the answer is not in the ticket, say so plainly. Do not invent merchant details, dates, or amounts.
+
+Ticket #{ticket_number}
+
+Comments:
+{comments}
+
+Original summary:
+{summary}
+
+Conversation so far:
+{conversation}
+
+User: {question}
+Assistant:"""
+
+
+def answer_followup(
+    ticket_number: Any,
+    notes: List[Dict[str, Any]],
+    summary: str,
+    history: List[Dict[str, str]],
+    question: str,
+) -> str:
+    """Answer a follow-up question about a ticket, grounded in its comments.
+
+    `history` is a list of prior turns ({"role": "user"|"assistant", "content": str}),
+    oldest first, *excluding* the new question. The new question is passed
+    separately as `question`.
+    """
+    transcript = _format_notes(notes)
+    if not transcript:
+        raise ClaudeError("No comments to answer questions against.")
+
+    convo_lines: List[str] = []
+    for m in history:
+        role = "User" if m.get("role") == "user" else "Assistant"
+        content = (m.get("content") or "").strip()
+        if content:
+            convo_lines.append(f"{role}: {content}")
+    conversation = "\n\n".join(convo_lines) if convo_lines else "(no prior turns)"
+
+    prompt = _ASK_PROMPT_TEMPLATE.format(
+        ticket_number=ticket_number,
+        comments=transcript,
+        summary=(summary or "(no prior summary)").strip(),
+        conversation=conversation,
+        question=question.strip(),
+    )
+    answer = _run_claude(prompt)
+    logger.info(
+        "followup answered for ticket %s (%d notes, %d prior turns → %d chars)",
+        ticket_number, len(notes), len(history), len(answer),
+    )
+    return answer

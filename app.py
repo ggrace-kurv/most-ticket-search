@@ -17,7 +17,7 @@ from flask import Flask, Response, jsonify, render_template, request
 
 import cache
 import config
-from claude_client import ClaudeError, summarize_ticket
+from claude_client import ClaudeError, _strip_html, answer_followup, summarize_ticket
 from most2_client import MOST2Client, MOST2Error
 
 logging.basicConfig(
@@ -40,11 +40,16 @@ FILTER_KEYS = (
     "ticket_id",
     "merchant_id",
     "cn",
+    "chain",
     "problem",
+    "problem_group",
     "office",
     "status",
+    "verification_status",
     "date_from",
     "date_to",
+    "closed_from",
+    "closed_to",
 )
 
 # Explicit map from our canonical column names → MOST2 response keys.
@@ -96,6 +101,11 @@ COLUMN_LABELS = {
     "merchant_id": "Merchant #",
     "cn": "CN",
     "dba": "DBA",
+    "ownership_group": "Owner Grp",
+    "assigned_person": "Service Rep",
+    "opened_at": "Opened",
+    "closed_at": "Closed",
+    "last_comment": "Last Comment",
     "age_days": "Age (d)",
     "sla_hours": "SLA (h)",
 }
@@ -139,10 +149,12 @@ def fetch_results(
             f"{config.MAX_SEARCH_CALLS}). Narrow your selection."
         )
 
-    # Status filter is applied client-side, so it's not part of the
-    # cache key — toggling B/O/H/C reuses the same cached result set.
+    # Status is sent upstream (so MOST2's 1000-row cap applies to relevant
+    # tickets, not closed-history clutter). It's part of the cache key, so
+    # changing status triggers a fresh fetch. Client-side filter_by_status
+    # is kept as a safety net.
     status = base_filters.get("status", "")
-    upstream_filters = {k: v for k, v in base_filters.items() if k != "status"}
+    upstream_filters = base_filters
     cache_key = {**upstream_filters, "_groups": group_axis, "_reps": rep_axis}
 
     cached = cache.get(cache_key, config.SEARCH_CACHE_TTL)
@@ -173,9 +185,6 @@ def fetch_results(
                 continue
             seen.add(tid)
             merged.append(row)
-
-    # Sort by opened date descending so the most recent are first.
-    merged.sort(key=lambda r: r.get("OpenedDateTime") or "", reverse=True)
 
     cache.put(cache_key, merged)
     filtered = filter_by_status(merged, status)
@@ -219,6 +228,42 @@ def derive_status(row: Dict[str, Any]) -> str:
     return "Open"
 
 
+_SORTABLE_COLUMNS = {
+    "ticket_id", "merchant_id", "cn", "dba", "problem", "status",
+    "ownership_group", "office", "assigned_person", "opened_at",
+    "closed_at", "age_days", "last_comment",
+}
+_NUMERIC_SORT_COLUMNS = {"ticket_id", "merchant_id", "cn", "age_days"}
+
+
+def sort_rows(
+    rows: List[Dict[str, Any]],
+    col: str,
+    direction: str,
+) -> List[Dict[str, Any]]:
+    """Sort rows by a canonical column name. Numeric columns parse as int;
+    everything else falls back to lower-case string compare. Date columns
+    are stored as YYYY-MM-DD HH:MM:SS strings, which sort lexicographically
+    in chronological order — no special handling needed."""
+    if col not in _SORTABLE_COLUMNS:
+        col = "opened_at"
+        direction = "desc"
+    reverse = direction == "desc"
+
+    if col in _NUMERIC_SORT_COLUMNS:
+        def key(r):
+            v = lookup(r, col)
+            try:
+                return int(v)
+            except (ValueError, TypeError):
+                return 0
+    else:
+        def key(r):
+            return str(lookup(r, col) or "").lower()
+
+    return sorted(rows, key=key, reverse=reverse)
+
+
 _STATUS_PREDICATES = {
     "B": lambda s: s in ("Open", "Hold"),
     "O": lambda s: s == "Open",
@@ -243,6 +288,13 @@ def search():
     if per_page not in (25, 50, 100, 200, 500):
         per_page = 100
 
+    sort_col = request.args.get("sort", "opened_at")
+    sort_dir = request.args.get("dir", "desc")
+    if sort_col not in _SORTABLE_COLUMNS:
+        sort_col = "opened_at"
+    if sort_dir not in ("asc", "desc"):
+        sort_dir = "desc"
+
     submitted = (
         bool(filters) or bool(groups) or bool(reps) or "submitted" in request.args
     )
@@ -260,6 +312,24 @@ def search():
             error = f"Search failed: {e}"
             logger.exception(error)
 
+    rows = sort_rows(rows, sort_col, sort_dir)
+
+    # Merge any ProblemType values seen in this result set into the dropdown
+    # options. Keeps the picker current as MOST2 adds new problem types
+    # without requiring a config.py edit. Unknown types are also logged so
+    # they can be promoted into the canonical list.
+    seen_problem_types = {
+        (r.get("ProblemType") or "").strip() for r in rows
+    } - {""}
+    canonical = set(config.PROBLEM_TYPES)
+    extras = sorted(seen_problem_types - canonical, key=str.lower)
+    if extras:
+        logger.info(
+            "problem types present in results but missing from config.PROBLEM_TYPES: %s",
+            extras,
+        )
+    merged_problem_types = sorted(canonical | seen_problem_types, key=str.lower)
+
     total = len(rows)
     total_pages = max((total + per_page - 1) // per_page, 1)
     page = min(page, total_pages)
@@ -271,13 +341,26 @@ def search():
     def page_url(n: int) -> str:
         return "?" + urlencode(base_args + [("page", n)])
 
+    def sort_url(col: str) -> str:
+        """URL to apply when clicking a column header. Toggles direction
+        if the column is already active; otherwise switches to asc."""
+        new_dir = "desc" if (sort_col == col and sort_dir == "asc") else "asc"
+        kept = [
+            (k, v) for k, v in request.args.items(multi=True)
+            if k not in ("sort", "dir", "page")
+        ]
+        return "?" + urlencode(kept + [("sort", col), ("dir", new_dir)])
+
     return render_template(
         "search.html",
         filters=filters,
         selected_groups=set(groups),
         selected_reps=set(reps),
         all_groups=config.OWNERSHIP_GROUPS,
+        problem_groups=config.PROBLEM_GROUPS,
+        problem_types=merged_problem_types,
         team_reps=config.TEAM_REPS,
+        service_reps=config.SERVICE_REPS,
         submitted=submitted,
         error=error,
         warning=warning,
@@ -290,6 +373,9 @@ def search():
         column_labels=COLUMN_LABELS,
         lookup=lookup,
         page_url=page_url,
+        sort_url=sort_url,
+        sort_col=sort_col,
+        sort_dir=sort_dir,
         export_query=urlencode(base_args),
     )
 
@@ -303,19 +389,61 @@ def export_csv():
         logger.exception("CSV export failed")
         return Response(f"Export failed: {e}", status=500)
 
+    columns = EXPORT_COLUMNS + ["comments"]
     buf = StringIO()
     writer = csv.writer(buf, quoting=csv.QUOTE_MINIMAL)
-    writer.writerow(EXPORT_COLUMNS)
-    for row in rows:
-        writer.writerow([_csv_value(lookup(row, c)) for c in EXPORT_COLUMNS])
+    writer.writerow(columns)
+    total = len(rows)
+    for i, row in enumerate(rows):
+        comments_text = _fetch_comments_for_export(row.get("TicketNumber"))
+        out = [_csv_value(lookup(row, c)) for c in EXPORT_COLUMNS]
+        out.append(comments_text)
+        writer.writerow(out)
+        if (i + 1) % 50 == 0:
+            logger.info("CSV export progress: %d/%d tickets", i + 1, total)
 
     filename = f"tickets-{datetime.now().strftime('%Y%m%d-%H%M%S')}.csv"
-    logger.info("CSV export: %d rows", len(rows))
+    logger.info("CSV export: %d rows (with comments)", total)
     return Response(
         buf.getvalue(),
         mimetype="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+def _fetch_comments_for_export(ticket_number: Any) -> str:
+    """Per-ticket comment fetch for CSV export.
+
+    Returns a plain-text transcript, oldest-first. No redaction —
+    this download is internal-only. Per-ticket failures are logged
+    and stubbed so one bad ticket doesn't abort the whole export.
+    """
+    if not ticket_number:
+        return ""
+    try:
+        notes = _client.get_ticket_comments(ticket_number)
+    except Exception as e:
+        logger.warning("comments fetch failed for %s: %s", ticket_number, e)
+        return f"[error fetching comments: {e}]"
+    if not notes:
+        return ""
+    blocks = []
+    for n in reversed(notes):  # MOST2 returns newest-first
+        body = _strip_html(n.get("Comments") or "")
+        if not body:
+            continue
+        # Flatten newlines: Excel mis-renders embedded \n in CSV cells as
+        # extra rows when opened via double-click. Collapse whitespace runs
+        # into single spaces so each ticket stays on one CSV row.
+        body = " ".join(body.split())
+        when = n.get("DateAdded") or "(no date)"
+        who = n.get("AddedBy") or n.get("CSRep") or "unknown"
+        status = n.get("Status") or ""
+        header = f"{when} | {who}"
+        if status:
+            header += f" | status={status}"
+        blocks.append(f"[{header}] {body}")
+    return " ;; ".join(blocks)
 
 
 @app.route("/api/tickets/<ticket_number>/comments")
@@ -372,6 +500,58 @@ def api_ticket_summary(ticket_number):
         "summary": summary,
         "note_count": len(notes),
         "cached": False,
+    })
+
+
+@app.route("/api/tickets/<ticket_number>/ask", methods=["POST"])
+def api_ticket_ask(ticket_number):
+    """Answer a follow-up question about a ticket using its comment thread.
+
+    Stateless: the client sends the prior summary + conversation history,
+    we re-fetch the comments and re-prompt Claude. Comments are pulled
+    fresh each call so newly-added notes are reflected immediately.
+    """
+    payload = request.get_json(silent=True) or {}
+    question = (payload.get("question") or "").strip()
+    summary = (payload.get("summary") or "").strip()
+    history = payload.get("history") or []
+
+    if not question:
+        return jsonify({"error": "Missing 'question'."}), 400
+    if len(question) > 2000:
+        return jsonify({"error": "Question too long (max 2000 characters)."}), 400
+    if not isinstance(history, list) or len(history) > 30:
+        return jsonify({"error": "Invalid or too-long conversation history."}), 400
+    cleaned_history: List[Dict[str, str]] = []
+    for m in history:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        content = m.get("content")
+        if role in ("user", "assistant") and isinstance(content, str) and content.strip():
+            cleaned_history.append({"role": role, "content": content.strip()[:4000]})
+
+    try:
+        notes = _client.get_ticket_comments(ticket_number)
+    except MOST2Error as e:
+        return jsonify({"error": f"MOST2 error: {e}"}), 502
+    except Exception as e:
+        logger.exception("comments fetch failed for %s", ticket_number)
+        return jsonify({"error": str(e)}), 500
+
+    try:
+        answer = answer_followup(ticket_number, notes, summary, cleaned_history, question)
+    except ClaudeError as e:
+        logger.error("Claude follow-up failed for %s: %s", ticket_number, e)
+        return jsonify({"error": str(e)}), 502
+    except Exception as e:
+        logger.exception("follow-up failed for %s", ticket_number)
+        return jsonify({"error": str(e)}), 500
+
+    return jsonify({
+        "ticket_number": ticket_number,
+        "answer": answer,
+        "note_count": len(notes),
     })
 
 

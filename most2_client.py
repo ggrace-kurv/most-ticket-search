@@ -118,13 +118,20 @@ class MOST2Client:
           ticket_id, merchant_id, cn, problem, office, status,
           ownership_group, date_from, date_to  (dates as YYYY-MM-DD)
         """
-        status_value = filters.get("status") or "B"  # B = Both (Open+Hold) is MOST2's default
+        # Map our app's internal status codes to MOST2's wire codes.
+        # App: B=Open+Hold (default), O=Open, H=Hold, C=Closed, A=Any.
+        # MOST2: O, H, C, OH=Open & On Hold, B=Any.
+        # Sending status upstream lets MOST2 apply its 1000-row cap to
+        # *relevant* tickets, drastically reducing truncation when reps
+        # have lots of closed history.
+        _MOST2_STATUS = {"B": "OH", "O": "O", "H": "H", "C": "C", "A": "B"}
+        status_value = _MOST2_STATUS.get(filters.get("status", ""), "OH")
 
         payload = {
             "ddlServiceRep": filters.get("service_rep", ""),
             "ddlGroup": filters.get("ownership_group", ""),
             "cbProblemType": filters.get("problem", ""),
-            "ddlProbCatID": "",
+            "ddlProbCatID": filters.get("problem_group", ""),
             "txtTixNum": filters.get("ticket_id", ""),
             "txtOffice": filters.get("office", ""),
             "txtCN": filters.get("cn", ""),
@@ -132,13 +139,13 @@ class MOST2Client:
             "txtMID": filters.get("merchant_id", ""),
             "txtOpenFrom": _to_us_date(filters.get("date_from", "")),
             "txtOpenTo": _to_us_date(filters.get("date_to", "")),
-            "txtClosedFrom": "",
-            "txtClosedTo": "",
+            "txtClosedFrom": _to_us_date(filters.get("closed_from", "")),
+            "txtClosedTo": _to_us_date(filters.get("closed_to", "")),
             "dtDate": "",
             "ddlTixStatus": status_value,
             "escalationLvl": "",
-            "txtChain": "",
-            "ddlVerificationStatus": "",
+            "txtChain": filters.get("chain", ""),
+            "ddlVerificationStatus": filters.get("verification_status", ""),
         }
 
         result = self._post(config.EMS_SEARCH_PATH, payload)
